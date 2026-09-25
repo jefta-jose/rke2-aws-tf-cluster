@@ -164,3 +164,10 @@ sudo apt-get autoremove -y
 
 > Not part of the cluster recreate loop: **Floci** stays up as-is, and **Terraform** state is already
 > empty (we `terraform destroy`'d it this session). Re-applying Terraform is a separate step for later.
+
+# Autostart the VMs on WSL2 launch
+
+```bash
+virsh -c qemu:///system autostart rok-server
+virsh -c qemu:///system autostart rok-agent-1
+```
