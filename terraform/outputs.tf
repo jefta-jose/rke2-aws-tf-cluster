@@ -1,0 +1,9 @@
+output "ecr_frontend_url" { value = module.ecr_frontend.repository_url }
+output "ecr_backend_url" { value = module.ecr_backend.repository_url }
+output "general_secret_arn" { value = module.development_secret.secret_arn }
+output "email_queue_url" { value = module.email.queue_url }
+output "email_dlq_url" { value = module.email_dlq.queue_url }
+output "rke2_node_role" { value = aws_iam_role.rke2_node.name }
+output "alb_dns_name" { value = module.alb.alb_dns_name }
+output "alb_target_group_arn" { value = module.alb.target_group_arn }
+output "waf_web_acl_arn" { value = module.waf.web_acl_arn }

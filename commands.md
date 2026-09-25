@@ -73,3 +73,54 @@ Teardown of the throwaway once verified:
 ```bash
 limactl stop throwaway && limactl delete throwaway
 ```
+
+---
+
+## Phase 1 — Floci up (the local AWS)
+
+### Step 1.1 — Bring Floci up
+
+Floci lives in its own repo at `/home/jeffndegwa/floci-docker` (separate from this lab dir). Its
+`docker-compose.yaml` runs two services on a bridge network `floci-net`:
+- `floci` — the AWS core on `:4566` (docker socket mounted so it can spin real containers for
+  ECR/RDS/ECS; `FLOCI_STORAGE_MODE=hybrid`; state persisted in `./data`).
+- `floci-ui` — a web console on `:4500` (points at `http://floci:4566` over the docker network).
+
+```bash
+cd /home/jeffndegwa/floci-docker && docker compose up -d
+docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+```
+
+**Result:** `floci-docker-floci-1` healthy on `:4566`, `floci-docker-floci-ui-1` up on `:4500`.
+
+### Step 1.2 — Verify the AWS surface is live
+
+```bash
+curl -s http://localhost:4566/_floci/health | head -c 400
+```
+
+**Result:** Floci **2.1.0**, all needed services `running`: `ecr`, `secretsmanager`, `sqs`,
+`email`(SES), `elasticloadbalancing`/`elb`(ALB), `rds`, `wafv2`, `iam`, `ecs`, `eks`, `route53`,
+`kms`. Console reachable at http://localhost:4500.
+
+Install the aws CLI (the real AWS tool — Floci speaks the genuine AWS protocol, so the same `aws`
+command works against it, just pointed at `localhost:4566`), then confirm aws → Floci:
+
+```bash
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+cd /tmp && unzip -q -o awscliv2.zip && sudo ./aws/install --update && exec zsh   # exec zsh: reload PATH
+aws --version                                                                    # → aws-cli/2.35.21
+# point aws at Floci with dummy creds, then identity-check:
+export AWS_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
+aws sts get-caller-identity
+```
+
+**Result:** aws-cli **2.35.21** installed; identity returns Account `000000000000`,
+`arn:aws:iam::000000000000:root` — Floci's standard emulator identity. **Phase 1 = DONE.**
+Gotcha: after `sudo ./aws/install`, a new/reloaded shell (`exec zsh`) is needed for `aws` to appear
+on PATH.
+
+**Notes / deviations from PLAN.md:** network is `floci-net` (not `roklab`) and the console is a
+separate container on `:4500` (not the `/_floci/ui` path). `mailpit` is not in compose yet — it's
+only needed for SES in Phase 9, so we add it then. VMs will reach Floci via the host IP `:4566`,
+not the docker network, so the network name doesn't matter to the cluster.

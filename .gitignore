@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────
+# ROK Infra Lab — .gitignore
+# Sections: OS/editor · Secrets · Terraform · VMs (libvirt/cloud-init)
+#           Kubernetes/RKE2 · .NET (later) · JavaScript/Node (later)
+# ─────────────────────────────────────────────────────────────
+
+# ── OS / editor cruft ─────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# ── Secrets / credentials — never commit ──────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+*.tfvars
+!*.tfvars.example
+secrets.*
+kubeconfig
+*.kubeconfig
+
+# ── Terraform ─────────────────────────────────────────────────
+# Provider plugins & module caches (huge, re-downloaded by `init`)
+**/.terraform/*
+# State — contains secrets; use remote state instead of committing
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+crash.*.log
+# Plan output files
+*.tfplan
+# Lock file IS usually committed — keep it (uncomment to ignore)
+# .terraform.lock.hcl
+
+# ── VMs: libvirt / cloud-init build artifacts ─────────────────
+# Downloaded base images and generated disks/seeds shouldn't be in git
+*.img
+*.qcow2
+*.iso
+*-seed.iso
+*-cloudimg-*
+vms/**/output/
+
+# ── Kubernetes / RKE2 ─────────────────────────────────────────
+*.retry
+.kube/
+
+# ── .NET (added later) ────────────────────────────────────────
+bin/
+obj/
+*.user
+*.suo
+project.lock.json
+artifacts/
+[Dd]ebug/
+[Rr]elease/
+*.nupkg
+
+# ── JavaScript / Node (added later) ───────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+dist/
+build/
+coverage/
+.next/
+.cache/
