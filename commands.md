@@ -345,10 +345,10 @@ Resolve the host to the server node (this is the deferred 5.3 `/etc/hosts` step,
 ArgoCD; **DHCP-drifts — redo after reboot**), pull the initial admin password, install the CLI, log in:
 ```bash
 echo "$SERVER_IP argocd.rok.local" | sudo tee -a /etc/hosts
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
+PW=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo)
 curl -L -# -o /tmp/argocd https://github.com/argoproj/argo-cd/releases/download/v3.5.3/argocd-linux-amd64
 sudo install -m 555 /tmp/argocd /usr/local/bin/argocd && argocd version --client
-argocd login argocd.rok.local:30080 --username admin --password '<PW>' --plaintext --grpc-web
+argocd login argocd.rok.local:30080 --username admin --password $PW --plaintext --grpc-web
 ```
 Result: `'admin:login' logged in successfully`. The **web UI is the same server** as the CLI (not a
 CLI-only install). **Gotchas:** (1) a silent `curl -sSL` of the ~155 MB CLI produced a *corrupt*
