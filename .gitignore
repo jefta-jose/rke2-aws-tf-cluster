@@ -29,7 +29,8 @@ kubeconfig
 
 # ── Terraform ─────────────────────────────────────────────────
 # Provider plugins & module caches (huge, re-downloaded by `init`)
-**/.terraform/*
+**/.terraform/
+.terraform/
 # State — contains secrets; use remote state instead of committing
 *.tfstate
 *.tfstate.*
