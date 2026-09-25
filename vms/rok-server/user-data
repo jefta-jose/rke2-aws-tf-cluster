@@ -1,0 +1,44 @@
+#cloud-config
+# ============================================================================
+# cloud-init "user-data" for the rok-server VM.
+#
+# WHAT THIS IS: Ubuntu cloud images boot blank (no user, no password). On first
+# boot, a program called cloud-init looks for a "user-data" file and uses it to
+# configure the machine. We hand it this file via a tiny CD-ROM (the seed ISO
+# built in build.sh). The "#cloud-config" line on top is REQUIRED — it tells
+# cloud-init to read this as YAML config, not a shell script.
+# ============================================================================
+
+# --- Machine identity -------------------------------------------------------
+hostname: rok-server        # the short name the machine calls itself
+fqdn: rok-server            # its "full" name (same here; we have no DNS domain)
+manage_etc_hosts: true      # let cloud-init keep /etc/hosts correct for us
+preserve_hostname: false    # allow cloud-init to SET the hostname on first boot
+
+# --- Login account ----------------------------------------------------------
+# Create a user "ubuntu" we can SSH into. No password is ever set; we log in
+# ONLY with the SSH key below. That is why this is safe to leave open.
+users:
+  - name: ubuntu
+    groups: [sudo]                      # member of the sudo group...
+    sudo: "ALL=(ALL) NOPASSWD:ALL"      # ...and can run sudo without a password
+    shell: /bin/bash                    # give it a normal shell
+    lock_passwd: true                   # disable password login entirely
+    ssh_authorized_keys:
+      # This is YOUR public key (~/.ssh/id_ed25519.pub). Because the matching
+      # private key lives on your host, `ssh ubuntu@<vm-ip>` just works, no
+      # password. A public key is safe to store in plain text.
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJkCLRfhlhGylhNnZOzEjl4m7BUld5sFxaOxuWwHXX5E ndegwajeff4@gmail.com
+
+ssh_pwauth: false           # turn off password-based SSH; keys only
+
+# --- First-boot software ----------------------------------------------------
+# We keep the base image minimal ON PURPOSE: RKE2 gets installed by hand in
+# Phase 3.2 so you see every step. The one thing we add now is the QEMU guest
+# agent, which lets the host ask the VM "what's your IP?" reliably.
+package_update: true
+packages:
+  - qemu-guest-agent
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent   # start that agent immediately

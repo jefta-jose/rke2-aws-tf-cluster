@@ -1,0 +1,15 @@
+# ============================================================================
+# cloud-init "meta-data" for the rok-server VM.
+#
+# WHAT THIS IS: the second file cloud-init expects on the seed CD-ROM (next to
+# user-data). Where user-data is the "how to configure me" instructions, this
+# file is the machine's basic identity — the kind of thing a cloud (AWS/GCP)
+# would normally supply. For our local "NoCloud" setup we just fill it in.
+# ============================================================================
+
+instance-id: rok-server      # a unique id for this instance. If this value
+                             # CHANGES, cloud-init treats it as a brand-new
+                             # machine and re-runs first-boot setup. Keep it
+                             # stable so reboots don't re-trigger everything.
+
+local-hostname: rok-server   # hostname handed to the VM at the network layer

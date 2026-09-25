@@ -1,0 +1,30 @@
+#cloud-config
+# ============================================================================
+# cloud-init "user-data" for the rok-agent-1 VM (the RKE2 worker node).
+# Identical in shape to rok-server's user-data — only the hostname differs.
+# See vms/rok-server/user-data for the full line-by-line explanation.
+# ============================================================================
+
+hostname: rok-agent-1
+fqdn: rok-agent-1
+manage_etc_hosts: true
+preserve_hostname: false
+
+users:
+  - name: ubuntu
+    groups: [sudo]
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      # Same host public key, so `ssh ubuntu@<agent-ip>` works with no password.
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJkCLRfhlhGylhNnZOzEjl4m7BUld5sFxaOxuWwHXX5E ndegwajeff4@gmail.com
+
+ssh_pwauth: false
+
+package_update: true
+packages:
+  - qemu-guest-agent
+
+runcmd:
+  - systemctl enable --now qemu-guest-agent

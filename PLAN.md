@@ -47,7 +47,7 @@ confirms the toolchain before we commit.
         └─────────┼─────────────────────────────────────────────────┘
                   │  (host ↔ VM routing, Phase 5)
         ┌─────────┼───────────────────────┐   ┌───────────────────┐
-        │  VM: rok-server                 │   │  VM: rok-agent1    │
+        │  VM: rok-server                 │   │  VM: rok-agent-1    │
         │  RKE2 server (etcd+control)     │◀──│  RKE2 agent        │
         │  Traefik (NodePort 30080)       │9345 join              │
         │  ArgoCD, External Secrets Op    │   │  workloads         │
@@ -116,7 +116,7 @@ Confirm the host can do everything before we build.
 → Learn: real RKE2 server bootstrap, etcd, the node token, tls-san.
 
 ### Phase 4 — Real RKE2 agent join (the crash lesson, done right)
-- 4.1 Launch `rok-agent1` VM.
+- 4.1 Launch `rok-agent-1` VM.
 - 4.2 Install RKE2 agent, `config.yaml` → `server: https://<server-ip>:9345`, `token`, unique
   `node-name`/`node-ip`; start `rke2-agent`.
 - 4.3 `kubectl get nodes` → 2 nodes Ready. Inspect why it's clean now: separate kernels, separate
@@ -180,6 +180,6 @@ Following ROK's `setup-env.md` order:
 
 ## Cleanup notes (for later)
 - `docker compose down -v` removes Floci + mailpit + volumes.
-- Delete the VMs with the chosen tool (e.g. `multipass delete --purge rok-server rok-agent1`).
+- Delete the VMs with the chosen tool (e.g. `multipass delete --purge rok-server rok-agent-1`).
 - `terraform destroy` against Floci (or just drop the Floci volume).
 - Everything else is plain files under this directory.
