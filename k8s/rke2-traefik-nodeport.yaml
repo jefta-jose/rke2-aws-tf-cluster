@@ -1,0 +1,21 @@
+# Phase 6.1 — expose the bundled RKE2 Traefik on NodePort 30080 for the Floci ALB.
+#
+# RKE2 customizes bundled charts via HelmChartConfig (name must match the HelmChart:
+# "rke2-traefik" in kube-system). The helm-controller deep-merges valuesContent into
+# the chart values and re-runs the install.
+#
+# NOTE: this hardened Traefik chart reads the service type from service.spec.type
+# (NOT service.type — that key is ignored and leaves an illegal ClusterIP+nodePort).
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      spec:
+        type: NodePort
+    ports:
+      web:
+        nodePort: 30080

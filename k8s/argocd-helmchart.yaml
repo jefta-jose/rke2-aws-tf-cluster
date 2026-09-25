@@ -1,0 +1,27 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: argo-cd
+  namespace: kube-system
+spec:
+  repo: https://argoproj.github.io/argo-helm
+  chart: argo-cd
+  version: "10.9.2"
+  targetNamespace: argocd
+  createNamespace: true
+  valuesContent: |-
+    global:
+      domain: argocd.rok.local
+    configs:
+      params:
+        # serve plain HTTP on 8080 so Traefik can route without gRPC/TLS passthrough
+        server.insecure: true
+    server:
+      ingress:
+        enabled: true
+        controller: generic
+        ingressClassName: traefik
+        hostname: argocd.rok.local
+        path: /
+        pathType: Prefix
+        tls: false

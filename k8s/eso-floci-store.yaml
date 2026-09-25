@@ -1,0 +1,57 @@
+# ===>
+# Secret object that stores aws creds needed to read secret manager
+# ===>
+apiVersion: v1
+kind: Secret
+metadata:
+  name: floci-aws-creds
+  namespace: external-secrets
+type: Opaque
+stringData:
+  access-key-id: "test"
+  secret-access-key: "test"
+---
+# ===>
+# reads secrets from  "development-rok-general-secret"
+# and writes them into the Kubernetes Secret "rok-general-secret" in default.
+# ===>
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: rok-general-secret
+  namespace: default
+spec:
+  refreshInterval: 1m
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: floci-secrets-manager
+  target:
+    name: rok-general-secret
+    creationPolicy: Owner
+  dataFrom:
+    - extract:
+        key: development-rok-general-secret
+---
+# ===>
+# pulls creds from the secret object and uses them to read secret manager
+# ===>
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: floci-secrets-manager
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: us-east-1
+      auth:
+        secretRef:
+          accessKeyIDSecretRef:
+            name: floci-aws-creds
+            namespace: external-secrets
+            key: access-key-id
+          secretAccessKeySecretRef:
+            name: floci-aws-creds
+            namespace: external-secrets
+            key: secret-access-key
+
