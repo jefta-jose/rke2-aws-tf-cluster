@@ -7,24 +7,67 @@
       body { font-family: system-ui, sans-serif; margin: 3rem auto; max-width: 40rem; }
       pre { background: #f4f4f4; padding: 1rem; border-radius: 6px; overflow: auto; }
       .ok { color: #157f3b; } .err { color: #b00020; }
+      form { display: grid; gap: .5rem; margin: 1rem 0; }
+      input, textarea { padding: .5rem; font: inherit; }
+      button { padding: .5rem 1rem; font: inherit; cursor: pointer; width: fit-content; }
+      h2 { margin-top: 2.5rem; }
     </style>
   </head>
   <body>
     <h1>ROK Lab frontend</h1>
     <p>Calling the backend at <code>/api/hello</code> (routed via Traefik ingress):</p>
     <pre id="out">loading…</pre>
+
+    <h2>Send a test email</h2>
+    <p>Posts to <code>/api/email</code> → the <code>rok-mailer</code> service → mailpit (SMTP).
+       View it at <a href="/mailpit" target="_blank">/mailpit</a>.</p>
+    <form id="email-form">
+      <input id="to" type="email" placeholder="to (e.g. someone@rok.local)" value="someone@rok.local" required />
+      <input id="subject" type="text" placeholder="subject" value="Hello from the ROK Lab" required />
+      <textarea id="body" rows="4" placeholder="message body">Sent from the frontend form.</textarea>
+      <button type="submit">Send</button>
+    </form>
+    <pre id="email-out">—</pre>
+
     <script>
+      // Backend hello (existing).
       fetch("/api/hello")
         .then((r) => r.json())
         .then((j) => {
-          document.getElementById("out").textContent = JSON.stringify(j, null, 2);
-          document.getElementById("out").classList.add("ok");
+          const el = document.getElementById("out");
+          el.textContent = JSON.stringify(j, null, 2);
+          el.classList.add("ok");
         })
         .catch((e) => {
           const el = document.getElementById("out");
           el.textContent = "backend unreachable: " + e;
           el.classList.add("err");
         });
+
+      // Send-email form (Phase 9.3): frontend -> mailer -> mailpit.
+      document.getElementById("email-form").addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const out = document.getElementById("email-out");
+        out.className = "";
+        out.textContent = "sending…";
+        try {
+          const r = await fetch("/api/email", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              to: document.getElementById("to").value,
+              subject: document.getElementById("subject").value,
+              body: document.getElementById("body").value,
+            }),
+          });
+          const j = await r.json();
+          out.textContent = JSON.stringify(j, null, 2);
+          out.classList.add(r.ok ? "ok" : "err");
+        } catch (e) {
+          out.textContent = "mailer unreachable: " + e;
+          out.classList.add("err");
+        }
+      });
     </script>
   </body>
 </html>

@@ -678,3 +678,48 @@ hosts entry needed. Path: `browser → localhost:30080 (WSL2 mirrored) → socat
 
 > **9.1 done.** mailpit is an in-cluster test sink in `mailhog`, UI at `localhost:30080/mailpit`,
 > SMTP waiting on `mailpit-smtp.mailhog:1025`. Next (9.2): a `mailer` workload that sends to it.
+
+---
+
+## Phase 9.2 — the `mailer` workload (frontend → SMTP → mailpit)
+
+A new **server workload** in the map-driven chart: `rok-mailer`, a dependency-free Node service
+(`apps/mailer/server.js`) exposing `POST /api/email {to,subject,body}`. It opens a raw SMTP
+conversation (no auth/TLS) with the in-cluster mailpit sink and sends the message. `SMTP_HOST`/
+`SMTP_PORT` are **not hardcoded** — they come from `development-rok-general-secret` via ESO
+(`Smtp__Host`/`Smtp__Port`), the same config-from-Secrets-Manager pattern the backend uses.
+
+Chart wiring:
+- `workloads.mailer` in `values.yaml` ships `enabled: false` (like worker) so the frontend/backend
+  apps stay clean; image + `remoteKey: development-rok-general-secret` in `values-development.yaml`.
+- Ingress path `/api/email` — more specific than backend's `/api`, so Traefik routes them apart.
+- `secretEnv: {SMTP_HOST: Smtp__Host, SMTP_PORT: Smtp__Port}` — ESO's `dataFrom.extract` pulls every
+  key of the general secret into `rok-mailer-secret`; these two become env vars.
+- New ArgoCD app `k8s/argocd/rok-mailer-development.yaml` (flips mailer on, disables the rest);
+  `mailer.enabled=false` added to the backend/frontend/worker apps for isolation.
+
+**Terraform change:** the general secret's `Smtp__Host` moved `mailpit` → **`mailpit-smtp.mailhog`**
+(mailpit now lives in the `mailhog` namespace as service `mailpit-smtp`; cross-namespace DNS).
+
+```bash
+docker build -t rok-mailer:v1 apps/mailer
+docker tag rok-mailer:v1 localhost:5000/rok-mailer:v1
+docker push localhost:5000/rok-mailer:v1
+terraform -chdir=terraform apply            # pushes the new Smtp__Host into Floci Secrets Manager
+git add charts/rok-app k8s/argocd apps/mailer terraform/main.tf && git commit -m "Phase 9.2: mailer workload -> mailpit SMTP sink" && git push
+kubectl apply -f k8s/argocd/rok-mailer-development.yaml
+```
+Verify + smoke test:
+```bash
+kubectl -n rok-development get externalsecret,deploy,pods,ingress | grep -i mailer
+kubectl -n rok-development get secret rok-mailer-secret -o jsonpath='{.data.Smtp__Host}' | base64 -d; echo
+curl -s -X POST http://localhost:30080/api/email -H 'Content-Type: application/json' \
+  -d '{"to":"someone@rok.local","subject":"Hello from the lab","body":"First test."}'; echo
+```
+Result: `rok-mailer-secret` **SecretSynced True**; `rok-mailer` pod **Running**; decoded `Smtp__Host`
+= `mailpit-smtp.mailhog`; the curl returns `{"status":"sent",...,"sink":"mailpit-smtp.mailhog:1025"}`
+and the message appears in the mailpit UI (`localhost:30080/mailpit`). Path:
+`browser/curl → socat :30080 → Traefik (/api/email) → rok-mailer → SMTP mailpit-smtp.mailhog:1025`.
+
+> **9.2 done.** A frontend-reachable service sends mail into the in-cluster sink, configured from
+> Secrets Manager via ESO. Next (9.3): a send-email form on the frontend page.

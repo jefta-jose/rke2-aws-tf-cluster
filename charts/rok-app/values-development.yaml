@@ -4,7 +4,7 @@ workloads:
   frontend:
     image:
       repository: 192.168.122.1:5000/rok-frontend
-      tag: v1
+      tag: v2          # v2 adds the Phase 9.3 send-email form
   backend:
     image:
       repository: 192.168.122.1:5000/rok-backend
