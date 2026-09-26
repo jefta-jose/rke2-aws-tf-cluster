@@ -1,6 +1,6 @@
 # Phase 9.1 — mailpit as an in-cluster TEST mail sink, deployed the ROK way:
 # the upstream jouve/mailpit Helm chart + this values file, installed with
-#   helm install mailpit jouve/mailpit -n mailhog --version 0.32.5 -f k8s/mailpit-values.yaml
+#   helm install mailpit jouve/mailpit -n mailhog --version 0.32.5 -f k8s/mailpit/values.yaml
 # This mirrors ROK's manifests/values/mailpit_values.yaml. No AWS/SES anywhere —
 # the mailer (9.2) sends SMTP straight to this pod.
 #
@@ -39,7 +39,7 @@ persistence:
 # entrypoints (mailhog / mailhog-smtp on nodePorts 30004/30005) + WAF + htpasswd
 # auth. The lab has one Traefik web entrypoint (30080), so we keep the chart
 # ingress off here too and add our own host-less /mailpit Ingress
-# (k8s/mailpit-ingress.yaml) on that shared entrypoint.
+# (k8s/mailpit/ingress.yaml) on that shared entrypoint.
 ingress:
   enabled: false
 

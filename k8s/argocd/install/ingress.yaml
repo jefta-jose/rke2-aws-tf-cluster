@@ -1,0 +1,30 @@
+# Phase 6.3 — ArgoCD UI/API Ingress. Host-LESS on the "/argocd" path (same pattern
+# as mailpit's /mailpit), so it's reachable at http://localhost:30080/argocd through
+# the socat bridge with NO hostname and NO /etc/hosts entry (the old host-scoped
+# argocd.rok.local Ingress needed one, and a Windows browser can't resolve it anyway).
+# "/argocd" is more specific than the frontend's host-less "/" rule, so Traefik routes
+# them apart with no collision.
+#
+# The path prefix must match argocd-server's --rootpath (server.rootpath=/argocd in the
+# HelmChart values) so ArgoCD's own asset/redirect URLs line up under /argocd. Traefik
+# forwards the full path (no prefix strip), which is exactly what --rootpath expects.
+#
+# NOTE: the chart release is `argo-cd`, so the server Service is `argo-cd-argocd-server`
+# on port 80 (plain HTTP because server.insecure=true).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: argocd
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /argocd
+            pathType: Prefix
+            backend:
+              service:
+                name: argo-cd-argocd-server
+                port:
+                  number: 80

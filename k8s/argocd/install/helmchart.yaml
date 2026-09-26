@@ -1,0 +1,26 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: argo-cd
+  namespace: kube-system
+spec:
+  repo: https://argoproj.github.io/argo-helm
+  chart: argo-cd
+  version: "10.9.2"
+  targetNamespace: argocd
+  createNamespace: true
+  valuesContent: |-
+    configs:
+      params:
+        # serve plain HTTP on 8080 so Traefik can route without gRPC/TLS passthrough
+        server.insecure: true
+        # serve the UI/API under a sub-path so a HOST-LESS Ingress can route it (no hostname,
+        # no /etc/hosts) — reached through the same socat bridge as the app, at /argocd.
+        # --rootpath makes argocd-server emit assets/redirects under /argocd/ AND expect the
+        # prefix on the way in, so Traefik must NOT strip it (a plain Ingress doesn't).
+        server.rootpath: /argocd
+    server:
+      # Our own host-less Ingress (k8s/argocd/install/ingress.yaml) routes /argocd; don't let the chart
+      # create a host-scoped one (that needed argocd.rok.local + an /etc/hosts entry).
+      ingress:
+        enabled: false

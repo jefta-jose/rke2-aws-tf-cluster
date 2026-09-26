@@ -60,7 +60,7 @@ the Secrets Manager key, `dataFrom.extract` pulls all its keys into the k8s Secr
 
 ## ArgoCD: one Application per workload
 
-`k8s/argocd/rok-<workload>-development.yaml` — each Application points at **this same chart**
+`k8s/argocd/applications/rok-<workload>-development.yaml` — each Application points at **this same chart**
 but enables only its own workload via `helm.parameters` (`workloads.X.enabled=false` for the
 others). So each app owns exactly one workload's resources, in namespace `rok-development`.
 This mirrors becklar's per-workload apps and keeps blast radius small (sync/rollback one
@@ -76,7 +76,7 @@ workload at a time).
    and (if it has a secret) `externalSecret.remoteKey`.
 3. **Build + push its image** to `192.168.122.1:5000/<name>:<tag>` (Phase 7 flow).
 4. **Create its Secrets Manager secret** in Floci if it needs one (matching `remoteKey`).
-5. **Add an ArgoCD Application** in `k8s/argocd/` (copy an existing one; enable only the new
+5. **Add an ArgoCD Application** in `k8s/argocd/applications/` (copy an existing one; enable only the new
    workload) and `kubectl apply -f` it.
 
 No template changes required for any of the above.
@@ -84,7 +84,7 @@ No template changes required for any of the above.
 ## How to add a new environment (e.g. production)
 
 Create `values-production.yaml` (same shape as `values-development.yaml`, prod image repos +
-`remoteKey`s) and a matching set of `k8s/argocd/rok-<workload>-production.yaml` Applications
+`remoteKey`s) and a matching set of `k8s/argocd/applications/rok-<workload>-production.yaml` Applications
 that reference `values-production.yaml` and a `rok-production` namespace.
 
 ## Lab-specific notes

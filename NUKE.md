@@ -90,11 +90,12 @@ The `socat` forwarder (WSL2 host `localhost:30080` → VM `:30080`) runs under `
 pkill -f 'socat.*30080'
 ```
 
-### 5.2 Remove the /etc/hosts entries the lab added
+### 5.2 Remove any stale /etc/hosts entries
 
-Phase 6.3a appended `<IP> argocd.rok.local`. There may also be a **stale `mailpit.rok.local`** line from
-the first mailpit attempt (9.1a) before it switched to host-less `/mailpit`. Remove both (they carry
-now-stale DHCP IPs anyway):
+Both ArgoCD and mailpit are now **host-less** (`/argocd` and `/mailpit`), so a fresh rebuild adds
+**nothing** to `/etc/hosts`. These `sed`s only clean up leftovers from older runs — an `argocd.rok.local`
+line from the pre-host-less ArgoCD Ingress, or a `mailpit.rok.local` line from the first mailpit attempt
+(9.1a). Harmless no-ops if the lines aren't there:
 
 ```bash
 sudo sed -i '/argocd\.rok\.local/d' /etc/hosts

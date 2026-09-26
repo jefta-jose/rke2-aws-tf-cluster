@@ -162,9 +162,10 @@ future terminal, deliberately re-run the `export` line from step B.
 
 ## Phase 2 — Terraform the AWS base into Floci
 
-Provider points at Floci (`localhost:4566`, dummy creds, skip flags). Provisions network + 2 ECR repos,
-`development-rok-general-secret`, SQS `email` + `email-dlq` (FIFO), IAM node role/policies, ALB → NodePort
-30080 target group, and the WAFv2 WebACL.
+Provider points at Floci (`localhost:4566`, dummy creds, skip flags). Provisions the network,
+`development-rok-general-secret`, SQS `email` + `email-dlq` (FIFO), and IAM node role/policies. It also
+provisions an ALB → NodePort 30080 target group + a WAFv2 WebACL, but those exist only to mirror ROK's
+infra — the lab does not use them (traffic reaches the cluster via socat, not the ALB; see 8.4/8.5).
 ```bash
 cd /home/jeffndegwa/rke2-aws-tf-cluster/terraform
 terraform init
@@ -173,50 +174,39 @@ terraform apply
 ```
 Result: applied cleanly against Floci.
 
-## Phase 5 (networking) — wire the two halves: VMs → Floci, and ALB → Traefik NodePort
+## Phase 5 (networking) — wire the compute world to Floci (outbound)
 
 The lab is **two worlds that don't naturally know about each other**, and on real AWS a shared VPC
-wires them for free. Locally we hand-wire the two directions of traffic:
+wires them for free. Locally we hand-wire the **outbound** path (pods → Floci); the inbound path
+(user → cluster) uses a socat bridge, not the ALB — see 8.4.
 - **AWS world** = Floci, a container on the host's Docker net, serving AWS APIs on `:4566`.
 - **compute world** = the RKE2 VMs on libvirt `virbr0` (`192.168.122.0/24`).
 
 ### 5.0 Grab live IPs into shell vars (re-run per shell — DHCP drifts)
 Node IPs are DHCP and change across boots, so derive them instead of hardcoding. The virbr0 gateway
-(`HOST_IP`, what VMs use to reach Floci) is stable but we derive it too; the target-group ARN comes
-straight from Terraform output. Run on the HOST. (Comments stripped: interactive zsh doesn't treat
+(`HOST_IP`, what VMs use to reach Floci) is stable but we derive it too. Run on the HOST. (Comments
+stripped: interactive zsh doesn't treat
 `#` as a comment unless `setopt interactive_comments`, and it would tilde-expand a `~` inside one →
 `no such user`.) `HOST_IP` is the stable virbr0 gateway (~192.168.122.1):
 ```bash
 HOST_IP=$(ip -4 addr show virbr0 | awk '/inet / {print $2}' | cut -d/ -f1)
 SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server  | awk '/ipv4/ {print $4}' | cut -d/ -f1)
 AGENT_IP=$(virsh -c qemu:///system domifaddr rok-agent-1 | awk '/ipv4/ {print $4}' | cut -d/ -f1)
-TG_ARN=$(terraform -chdir=/home/jeffndegwa/rke2-aws-tf-cluster/terraform output -raw alb_target_group_arn)
-printf 'HOST_IP=%s\nSERVER_IP=%s\nAGENT_IP=%s\nTG_ARN=%s\n' "$HOST_IP" "$SERVER_IP" "$AGENT_IP" "$TG_ARN"
+printf 'HOST_IP=%s\nSERVER_IP=%s\nAGENT_IP=%s\n' "$HOST_IP" "$SERVER_IP" "$AGENT_IP"
 ```
 
-### 5.1 VMs → Floci (outbound) — the road ECR pulls + ESO secret-sync ride on
-Pods must *call* AWS (pull from ECR, GetSecretValue via ESO, SQS). From a VM the host — and thus
+### 5.1 VMs → Floci (outbound) — the road image pulls + ESO secret-sync ride on
+Pods must *call* AWS (GetSecretValue via ESO, SQS) and pull images. From a VM the host — and thus
 Floci — is the virbr0 gateway `$HOST_IP:4566` (Floci binds `*:4566`, so it's reachable). Prove
 the path from inside a node:
 ```bash
 ssh ubuntu@"$SERVER_IP" "curl -sS -o /dev/null -w 'floci http=%{http_code}\n' http://$HOST_IP:4566/ || echo UNREACHABLE"
 ```
-Result: got an HTTP status back → VM→host→Floci path is open. (Note for Phase 7: the ECR output URLs
-say `localhost:4566`, which from a VM means the VM itself — nodes will need containerd pointed at
-`$HOST_IP:4566` instead.)
+Result: got an HTTP status back → VM→host→Floci path is open.
 
-### 5.2 Floci ALB → VMs (inbound) — the front door for user traffic
-Real ROK flow: **user → ALB → Traefik (NodePort) → pod**. The ALB needs to know where its backends
-are. Register both node IPs on NodePort `30080` into the `target_type = "ip"` target group. Uses the
-vars from 5.0. On the HOST:
-```bash
-AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test aws --endpoint-url=http://localhost:4566 --region us-east-1 elbv2 register-targets --target-group-arn "$TG_ARN" --targets Id=$SERVER_IP,Port=30080 Id=$AGENT_IP,Port=30080
-AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test aws --endpoint-url=http://localhost:4566 --region us-east-1 elbv2 describe-target-health --target-group-arn "$TG_ARN"
-```
-Result: both targets registered, `State: initial / Elb.RegistrationInProgress`. They read `unhealthy`
-because **nothing listens on 30080 yet** — Traefik doesn't exist until Phase 6. That's the correct
-state now; when Phase 6 brings Traefik up on NodePort 30080 the health check passes → targets go
-`healthy`, confirming the ALB→cluster hop end-to-end.
+> The inbound front door (**user → cluster**) does NOT go through Floci's ALB — see 8.4 for why
+> (Floci can't route into the libvirt subnet and rewrites the Host header), and how a socat bridge
+> stands in for it.
 
 > 5.3 (`/etc/hosts` for the mock Route53) is deferred to Phase 8 — nothing to resolve until a frontend
 > ingress host exists.
@@ -224,13 +214,14 @@ state now; when Phase 6 brings Traefik up on NodePort 30080 the health check pas
 ## Phase 6.1 — expose the bundled Traefik on NodePort 30080
 
 RKE2 ships Traefik as a **DaemonSet** (one pod per node) but its `rke2-traefik` Service defaults to
-**ClusterIP** — nothing answers on a node port, so the ALB targets stay `unhealthy`. Customize a
+**ClusterIP** — nothing answers on a node port, so the socat bridge (8.4) would have nothing to
+forward to. Customize a
 *bundled* chart the RKE2-native way: a **`HelmChartConfig`** named after the chart (`rke2-traefik`,
 `kube-system`); the helm-controller deep-merges its `valuesContent` and re-runs the install. Manifest
-lives at `k8s/rke2-traefik-nodeport.yaml`; apply from the HOST:
+lives at `k8s/traefik/nodeport.yaml`; apply from the HOST:
 ```bash
 export KUBECONFIG="$HOME/.kube/rok-lab.yaml"
-kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/rke2-traefik-nodeport.yaml
+kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/traefik/nodeport.yaml
 ```
 Verify (single-line jsonpath):
 ```bash
@@ -245,26 +236,11 @@ and reading its `values.yaml`. Fixed manifest uses `service.spec.type: NodePort`
 Result: `type=NodePort`, `web=30080` (websecure got an ephemeral 32287). Traefik answers on
 `$SERVER_IP:30080` with `404` (up, no route yet).
 
-### 6.1a — why the ALB targets DON'T go healthy yet (corrects the Phase 5.2 prediction)
-
-The Phase 5.2 note predicted "Traefik up on 30080 → targets go healthy." **Wrong.** The target group's
-health check is `HTTP GET /` with **matcher `200`** (interval 30s, healthy threshold 3), but a
-route-less Traefik answers `/` with **`404`**. `404 ≠ 200`, so Floci correctly holds both targets
-`unhealthy` — Traefik being up is necessary but not sufficient. Verify the mismatch (single line each):
-```bash
-aws --endpoint-url=http://localhost:4566 --region us-east-1 elbv2 describe-target-groups --target-group-arns "$TG_ARN" --query 'TargetGroups[0].{path:HealthCheckPath,matcher:Matcher.HttpCode,proto:HealthCheckProtocol,port:HealthCheckPort}' --output table
-aws --endpoint-url=http://localhost:4566 --region us-east-1 elbv2 describe-target-health --target-group-arn "$TG_ARN" --query 'TargetHealthDescriptions[].{ip:Target.Id,state:TargetHealth.State}' --output table
-```
-Decision: **do NOT force it** (no matcher-relaxing, no drift). The targets flip to `healthy` on their
-own at **Phase 8**, when ArgoCD deploys the app and its Ingress serves `/` with `200`. Caveat for then:
-the ALB health check hits `GET /` with no app Host header, so the app's Ingress must answer `/` via a
-path/catch-all route, not only a host-based route — else Traefik keeps 404-ing the health check.
-
 ### 6.1b — Floci recovery (it died on WSL2 shutdown)
 
 Floci is a docker-compose stack; a WSL2 shutdown left all three containers `Exited (255)` and nothing on
-`:4566`. State survived the restart (target group, ALB, both ECR repos, full Terraform state all intact).
-Start the ECR-backing registry FIRST (hybrid-mode gotcha), then Floci:
+`:4566`. All Floci state (Secrets Manager, SQS, the full Terraform state) survives the restart.
+Start the registry-backing container FIRST (hybrid-mode gotcha), then Floci:
 ```bash
 docker start floci-ecr-registry floci-docker-floci-1 floci-docker-floci-ui-1
 curl -sS -o /dev/null -w 'floci http=%{http_code}\n' http://localhost:4566/ && aws --endpoint-url=http://localhost:4566 --region us-east-1 sts get-caller-identity
@@ -277,10 +253,10 @@ curl -sS -o /dev/null -w 'floci http=%{http_code}\n' http://localhost:4566/ && a
 Install ESO the RKE2-native way (no `helm` on the host): a **`HelmChart`** CR (`helm.cattle.io/v1`) in
 `kube-system` — the bundled helm-controller pulls the chart and installs it in-cluster, same mechanism
 that runs Traefik. Chart pinned to `external-secrets 2.11.0` (appVersion v2.11.0). Manifest at
-`k8s/eso-helmchart.yaml`; apply from the HOST:
+`k8s/external-secrets/helmchart.yaml`; apply from the HOST:
 ```bash
 export KUBECONFIG="$HOME/.kube/rok-lab.yaml"
-kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/eso-helmchart.yaml
+kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/external-secrets/helmchart.yaml
 ```
 Watch the install Job, then confirm pods + CRDs:
 ```bash
@@ -298,14 +274,14 @@ retired in the 2.x line).
 
 ### 6.2a — ClusterSecretStore smoke-test (ESO ⇄ Floci connectivity)
 
-Manifest at `k8s/eso-floci-store.yaml` (two docs): a `floci-aws-creds` Secret holding dummy `test/test`
+Manifest at `k8s/external-secrets/floci-store.yaml` (two docs): a `floci-aws-creds` Secret holding dummy `test/test`
 (safe to commit — only auths to the local mock) and a cluster-scoped `ClusterSecretStore`
 `floci-secrets-manager` referencing those creds. This is just the ESO connectivity smoke-test — the
 app's real secret sync uses **per-workload `SecretStore`s** rendered by the chart in Phase 8 (with creds
 in the app namespace). Apply + confirm the store validates (proves ESO reaches Floci Secrets Manager
 via the injected endpoint):
 ```bash
-kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/eso-floci-store.yaml
+kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/external-secrets/floci-store.yaml
 kubectl get clustersecretstore floci-secrets-manager   # -> Valid / READY True
 ```
 Result: store `Valid`/`READY True` — ESO authenticated to Floci and can read Secrets Manager. (Tip for
@@ -318,83 +294,71 @@ inspecting a synced Secret's keys later: `kubectl get secret <name> -o go-templa
 
 Same RKE2-native install pattern: an `argo-cd` **`HelmChart`** CR (chart `10.9.2`, appVersion `v3.5.3`)
 into an `argocd` namespace. Exposed through the **existing Traefik** (the Phase 6.1 ingress) rather than
-port-forward/NodePort. Key values baked into `k8s/argocd-helmchart.yaml`: `configs.params.server.insecure:
-true` (argocd-server serves plain HTTP on 8080 so Traefik routes without gRPC/TLS passthrough) and a
-chart-generated Ingress (`server.ingress.enabled`, `ingressClassName: traefik`, `hostname:
-argocd.rok.local`, `path: /`, `tls: false`). Apply from the HOST:
+port-forward/NodePort. Key values in `k8s/argocd/install/helmchart.yaml`: `server.insecure: true` (argocd-server
+serves plain HTTP on 8080 so Traefik routes without gRPC/TLS passthrough) and `server.rootpath: /argocd`
+(serve the UI/API under a **sub-path** so a HOST-LESS Ingress can route it — no hostname, no `/etc/hosts`,
+reached through the same socat bridge as the app). The chart's own Ingress is **disabled**
+(`server.ingress.enabled: false`); our host-less Ingress lives in `k8s/argocd/install/ingress.yaml` (path
+`/argocd`, class `traefik`), exactly like mailpit's `/mailpit`. Apply both from the HOST:
 ```bash
 export KUBECONFIG="$HOME/.kube/rok-lab.yaml"
-kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/argocd-helmchart.yaml
+kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/argocd/install/helmchart.yaml
 kubectl -n kube-system get job helm-install-argo-cd -w
+kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/argocd/install/ingress.yaml
 kubectl -n argocd get pods
 kubectl -n argocd get ingress
 ```
 7 pods `Running` (server, repo-server, application-controller statefulset, redis, dex, applicationset,
-notifications); Ingress `argo-cd-argocd-server` class `traefik`, host `argocd.rok.local`. Prove Traefik
-routes to it (Host header, no hosts file yet) — expect `200`:
+notifications); Ingress `argocd-server` class `traefik`, host-less on `/argocd`. Prove Traefik routes to
+it by **path** (no Host header, no hosts file). socat may not be up yet at this phase, so hit the node
+directly from WSL2 — expect `200` (follow the `/argocd`→`/argocd/` redirect with `-L`):
 ```bash
-curl -sS -o /dev/null -w 'http=%{http_code}\n' -H 'Host: argocd.rok.local' http://$SERVER_IP:30080/
+curl -sSL -o /dev/null -w 'http=%{http_code}\n' http://$SERVER_IP:30080/argocd
 ```
 
 ### 6.3a — access + CLI login
 
-Resolve the host to the server node (this is the deferred 5.3 `/etc/hosts` step, brought forward for
-ArgoCD; **DHCP-drifts — redo after reboot**), pull the initial admin password, install the CLI, log in:
+No `/etc/hosts` step anymore (host-less `/argocd`). Pull the initial admin password, install the CLI,
+log in. Because ArgoCD serves under `/argocd`, the CLI needs `--grpc-web-root-path /argocd` to find the
+API behind the sub-path; go straight to the node from WSL2 (`$SERVER_IP:30080`, no socat needed here):
 ```bash
-echo "$SERVER_IP argocd.rok.local" | sudo tee -a /etc/hosts
 PW=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo)
 curl -L -# -o /tmp/argocd https://github.com/argoproj/argo-cd/releases/download/v3.5.3/argocd-linux-amd64
 sudo install -m 555 /tmp/argocd /usr/local/bin/argocd && argocd version --client
-argocd login argocd.rok.local:30080 --username admin --password $PW --plaintext --grpc-web
+argocd login $SERVER_IP:30080 --username admin --password $PW --plaintext --grpc-web --grpc-web-root-path /argocd
 ```
 Result: `'admin:login' logged in successfully`. The **web UI is the same server** as the CLI (not a
-CLI-only install). **Gotchas:** (1) a silent `curl -sSL` of the ~155 MB CLI produced a *corrupt*
-binary that **segfaulted** on `argocd version` — re-download with a progress bar (`-L -#`) and verify
-`argocd version --client` before trusting it. (2) `argocd login` warns the server cert is for
-`*.traefik.default`, not `argocd.rok.local` (Traefik's default self-signed cert) — answer `y`; cosmetic,
-login still succeeds. Pin the CLI to the server version (`v3.5.3`) to avoid client/server skew.
+CLI-only install). **Gotcha:** a silent `curl -sSL` of the ~155 MB CLI produced a *corrupt* binary that
+**segfaulted** on `argocd version` — re-download with a progress bar (`-L -#`) and verify
+`argocd version --client` before trusting it. Pin the CLI to the server version (`v3.5.3`) to avoid
+client/server skew.
 
-### 6.3b — open the ArgoCD web UI from Windows Chrome (WSL2 networking)
+### 6.3b — open the ArgoCD web UI (no port-forward)
 
-The `/etc/hosts` entry and the node IP `192.168.122.138` live on the **WSL2 Linux side / libvirt net**.
-A Linux (WSLg) browser can hit `http://argocd.rok.local:30080` directly, but **Windows Chrome cannot** —
-Windows has no route into `192.168.122.0/24` and doesn't read WSL2's `/etc/hosts`. Easiest browser path
-is a port-forward, which Windows reaches via WSL2's mirrored `localhost` (local port is arbitrary — use
-any free one; `6060` below because `8080` was busy):
+Host-less `/argocd` means the UI rides the **same front door as the app** through Traefik — **no
+port-forward, no hosts file**. Two entry points depending on where the browser runs:
+- **WSL2 side** (WSLg browser or curl): hit the node directly — `http://$SERVER_IP:30080/argocd`.
+- **Windows Chrome:** it can't reach `192.168.122.0/24`, so bring up the **socat bridge** — the lab's
+  single front door (§8.4). The helper script (re)starts it against rok-server's current IP:
 ```bash
-export KUBECONFIG="$HOME/.kube/rok-lab.yaml"
-kubectl -n argocd port-forward svc/argo-cd-argocd-server 6060:80
+bash /home/jeffndegwa/rke2-aws-tf-cluster/scripts/socat-bridge.sh
 ```
-Leave it running, then open `http://localhost:6060` in Windows Chrome (admin + the initial password).
-Trade-off: this **bypasses Traefik** (hits the Service directly) and only lives while the command runs.
-To reach it through the *real* Traefik route from Windows instead: run a forwarder on the WSL2 host
-(`socat TCP-LISTEN:30080,fork,reuseaddr TCP:192.168.122.138:30080`) + add a *Windows* hosts entry
-`127.0.0.1 argocd.rok.local`, then browse `http://argocd.rok.local:30080`.
+Then browse `http://localhost:30080/argocd` (admin + the initial password). This replaces the old
+`kubectl port-forward` entirely — the UI now goes through the real Traefik route like the app does. The
+same bridge serves the app and mailpit too (Traefik routes by path), so you start it once and leave it up.
+
+> **Sub-path gotcha:** if the login page loads blank or assets 404, it's a `rootpath`/`basehref`
+> mismatch, not socat/Traefik — confirm `server.rootpath: /argocd` took effect
+> (`kubectl -n argocd get cm argocd-cmd-params-cm -o jsonpath='{.data.server\.rootpath}'`). If the CM
+> has it but the UI still misbehaves, the running server didn't reload the flag — bounce it:
+> `kubectl -n argocd rollout restart deploy/argo-cd-argocd-server`. Traefik must forward the `/argocd`
+> prefix un-stripped (a plain Ingress does; don't add a strip-prefix middleware).
 
 > **Phase 6 checkpoint met** (PLAN.md): Traefik, ESO, and ArgoCD all `Running`; ArgoCD reachable + CLI
-> login works. Next: Phase 7 (ECR image flow) → Phase 8 (ArgoCD deploys frontend/backend; the app Ingress
-> serving `/` with `200` is what finally flips the ALB targets `healthy`, per 6.1a).
+> login works. Next: Phase 7 (image flow) → Phase 8 (ArgoCD deploys frontend/backend; the app Ingress
+> serves `/` with `200`, reachable through the socat bridge → Traefik NodePort).
 
 ---
-
-## Full nuke — tear the whole lab down to a bare host
-
-Wipes VMs, disks, base image, the `default` network, and reverses the Phase 0 host prep.
-**Everything runs on the HOST** (not inside a VM). Exit any SSH sessions first.
-
-> ⚠️ The step order below is load-bearing: **VMs are destroyed FIRST, the network LAST.**
-> `net-destroy default` while a VM is still running rebuilds `virbr0` empty and leaves the
-> VM's tap dangling → `ssh: No route to host` + an empty `net-dhcp-leases`. Purging libvirt
-> while domains are still defined orphans their qcow2/ISO files. Follow the steps in order.
-
-The whole sequence (for-loop + ordered teardown) lives in a script so nothing multi-line is pasted.
-Disk/base-image deletion is left commented inside — uncomment to reclaim space. Run on the HOST:
-```bash
-bash /home/jeffndegwa/rke2-aws-tf-cluster/scripts/nuke-lab.sh
-```
-
-> Not part of the cluster recreate loop: **Floci** stays up as-is, and **Terraform** state is already
-> empty (we `terraform destroy`'d it this session). Re-applying Terraform is a separate step for later.
 
 # Autostart the VMs on WSL2 launch
 
@@ -459,7 +423,7 @@ That's all that's required — `registries.yaml` is what lets containerd reach t
 
 > **Phase 7 checkpoint met:** local registry replaces ECR; both RKE2 nodes pull
 > `192.168.122.1:5000/rok-{frontend,backend}:v1`. Next: Phase 8 (ArgoCD deploys the Helm charts;
-> Deployments reference those image refs; ESO injects `SECRET_MESSAGE`; reach it via ALB → Traefik).
+> Deployments reference those image refs; ESO injects `SECRET_MESSAGE`; reach it via socat → Traefik).
 
 ---
 
@@ -495,7 +459,8 @@ Key points:
   `floci-aws-creds` Secret **in the release namespace** (bootstrapped in 8.3, never in git).
 - **Host-less Ingress**, one per workload (`rok-frontend` `/`, `rok-backend` `/api`) so the
   one-app-per-workload model doesn't collide on a shared Ingress name; Traefik merges the path rules.
-  Host-less because Floci's ALB rewrites the `Host` header (8.4).
+  Host-less because requests arrive over the socat bridge with a `localhost` Host, not the app's
+  hostname, so path-based routing is what matches (8.4).
 - Backend's secret contents come from Floci `development-rok-general-secret` (`externalSecret.remoteKey`
   in values-development.yaml), which carries `SECRET_MESSAGE`. That key was added to `terraform/main.tf`
   (`development_secret`) + `terraform apply`; verify: `aws --endpoint-url=http://localhost:4566
@@ -511,15 +476,15 @@ Result: lint clean. Backend render → Service + Deployment (`secretKeyRef SECRE
 with the Floci `auth.secretRef` block. Frontend render → Service+Deployment+Ingress `/` and **zero**
 secret machinery.
 
-### 8.2 — ArgoCD Applications (one per workload, `k8s/argocd/`)
+### 8.2 — ArgoCD Applications (one per workload, `k8s/argocd/applications/`)
 
 Mirrors becklar's per-workload apps: each `Application` points at the **same** chart but enables only
 its own workload via `helm.parameters` (the others `=false`), reads `values-development.yaml`, and
 deploys to namespace `rok-development`.
 ```
-k8s/argocd/rok-frontend-development.yaml   # enables frontend only
-k8s/argocd/rok-backend-development.yaml    # enables backend only
-k8s/argocd/rok-worker-development.yaml     # enables worker only — applied in Phase 9
+k8s/argocd/applications/rok-frontend-development.yaml   # enables frontend only
+k8s/argocd/applications/rok-backend-development.yaml    # enables backend only
+k8s/argocd/applications/rok-worker-development.yaml     # enables worker only — applied in Phase 9
 ```
 
 ### 8.3 — deploy: push, bootstrap the namespace, apply the apps
@@ -533,8 +498,8 @@ git commit -m "..." && git push origin main
 kubectl create namespace rok-development
 kubectl -n rok-development create secret generic floci-aws-creds \
   --from-literal=access-key-id=test --from-literal=secret-access-key=test
-kubectl apply -f k8s/argocd/rok-frontend-development.yaml
-kubectl apply -f k8s/argocd/rok-backend-development.yaml
+kubectl apply -f k8s/argocd/applications/rok-frontend-development.yaml
+kubectl apply -f k8s/argocd/applications/rok-backend-development.yaml
 ```
 Verify (ArgoCD auto-syncs in ~30–60s):
 ```bash
@@ -550,55 +515,36 @@ JSON with the injected `SECRET_MESSAGE`.
 `Ingress.status.loadBalancer` (`LB={}`) and ArgoCD waits on it. Purely cosmetic — traffic works. Fix if
 desired: set Traefik `providers.kubernetesIngress.ingressEndpoint` so it writes ingress status.
 
-### 8.4 — the last hop: reach the app through the Floci ALB
+### 8.4 — the last hop: the socat bridge (host → Traefik NodePort)
 
-Path we're completing: `ALB :80 → Traefik NodePort 30080 → Ingress → pod`. Two Floci/Docker-Desktop
-topology facts force workarounds (none exist against real AWS):
+The inbound front door is a **socat bridge**, not Floci's ALB. Two Floci/Docker-Desktop topology facts
+are why the ALB can't serve this path (neither exists against real AWS):
 
 1. **Floci can't route into libvirt.** Floci runs in Docker Desktop's own VM; it has no route to the
-   RKE2 VMs' `192.168.122.0/24`, so an ALB target of `192.168.122.138:30080` health-checks as
-   `Target.Timeout`. But Floci *can* reach the host via `host.docker.internal` = `192.168.65.254`
-   (WSL2 mirrored networking). So bridge the host into libvirt and point the target at the host.
+   RKE2 VMs' `192.168.122.0/24`, so an ALB target of `192.168.122.138:30080` just times out.
 2. **Floci's LB rewrites the Host header** to the LB's own DNS name before forwarding, so a host-scoped
-   Ingress rule never matches → Traefik 404. Fix: path-based (host-less) Ingress (done in this commit).
-```bash
-# (a) host bridge: host:30080 -> VM:30080  (the WSL2 host CAN route to virbr0).
-#     Deliberately NOT a service — re-run this (and steps b,c) on each cluster rebuild.
-#     nohup so it survives closing this terminal; `pkill -f 'socat.*30080'` to stop it.
-nohup socat TCP-LISTEN:30080,fork,reuseaddr TCP:192.168.122.138:30080 >/dev/null 2>&1 &
+   Ingress rule never matches → Traefik 404. (Hence the host-less, path-based Ingress in 8.1.)
 
-# (b) re-point the ALB target at the address Floci can reach (drop the unreachable VM IPs)
-TG=$(terraform output -raw alb_target_group_arn)
-ALB=$(terraform output -raw alb_dns_name)
-AWS="aws --endpoint-url=http://localhost:4566 --region us-east-1"    # note: inline, zsh won't split it
-$AWS elbv2 deregister-targets --target-group-arn "$TG" --targets Id=192.168.122.138,Port=30080
-$AWS elbv2 deregister-targets --target-group-arn "$TG" --targets Id=192.168.122.105,Port=30080
-$AWS elbv2 register-targets   --target-group-arn "$TG" --targets Id=192.168.65.254,Port=30080
-
-# (c) health-check accepts 404: Traefik returns 404 for a host-less probe = "Traefik is alive"
-#     (JSON form required — the shorthand parser splits 200,404 into a list)
-$AWS elbv2 modify-target-group --target-group-arn "$TG" --matcher '{"HttpCode":"200,404"}'
-$AWS elbv2 describe-target-health --target-group-arn "$TG" \
-  --query 'TargetHealthDescriptions[].{S:TargetHealth.State,T:Target.Id}' --output table   # -> healthy
-```
-Result: target `192.168.65.254:30080` = **healthy**. Verify the whole chain end-to-end through the ALB.
-Floci publishes only `4566` to the host and its edge port routes the LB DNS to *S3* (host-based bucket
-parsing), so the LB data-plane is reached from **inside Floci's network** (a busybox sharing its netns):
+The WSL2 host, unlike Floci, *can* route into virbr0 — so bridge the host's `localhost:30080` straight
+to the node's NodePort. **This is the same one bridge for the whole lab** — Traefik routes by path, so
+once it's up, `/` (app), `/api`, `/mailpit`, and `/argocd` are all reachable through it; there's nothing
+per-resource to hook up. `scripts/socat-bridge.sh` derives rok-server's current IP (DHCP), kills any
+existing bridge, and starts a fresh one under `nohup` (survives the terminal). Re-run on each cluster
+rebuild (it's safe to re-run anytime — it just re-points at the current IP):
 ```bash
-docker run --rm --network container:floci-docker-floci-1 busybox \
-  wget -qO- -T6 "http://$ALB/api/hello"   # no Host header needed — Ingress is host-less (Floci rewrites Host anyway)
-# {"message":"hello from the ROK-lab backend","host":"rok-backend-...","secret":"injected from Floci
-#  Secrets Manager via ESO","time":"..."}   <- full path: ALB -> bridge -> Traefik -> backend -> ESO secret
+bash /home/jeffndegwa/rke2-aws-tf-cluster/scripts/socat-bridge.sh
 ```
+Under the hood it's a single `socat TCP-LISTEN:30080,fork,reuseaddr TCP:$SERVER_IP:30080`; stop it with
+`pkill -f 'socat.*30080'`.
 
 > **Phase 8 checkpoint met:** GitOps (ArgoCD) deploys the chart from git; images pull from the local
-> registry; ESO injects the secret; and the app is reachable through the **full ROK path** ALB → Traefik
-> → pod. The `socat` bridge + host-target + host-less Ingress are Floci-topology accommodations, not part
-> of the real AWS design (real ALB routes into the VPC and preserves the Host header).
+> registry; ESO injects the secret; and the app is reachable through **socat → Traefik → pod**. The
+> `socat` bridge + host-less Ingress are Floci-topology accommodations, not part of the real AWS design
+> (real ALB routes into the VPC and preserves the Host header).
 
 ### 8.5 — Access the app locally + the full request trace
 
-The `socat` bridge (§8.4a) also doubles as the **local browser entry point**: it listens on the WSL2
+The `socat` bridge (§8.4) also doubles as the **local browser entry point**: it listens on the WSL2
 host's `localhost:30080`, so — with the host-less Ingress — a plain request routes straight through.
 ```bash
 curl -s http://localhost:30080/          | head -c 120   # frontend HTML (no Host header needed)
@@ -629,8 +575,8 @@ Browser/curl (Windows or WSL2)  GET http://localhost:30080/
   ▼
   {"message":"…","host":"rok-backend-…","secret":"injected from Floci Secrets Manager via ESO", …}
 ```
-**This local path deliberately skips the ALB** — for a human at a browser, `host → socat → Traefik
-NodePort` is the direct route; the ALB (§8.4) is validated separately. Real ROK equivalent:
+**This path doesn't use the ALB at all** — `host → socat → Traefik NodePort` is the whole route (the
+Floci ALB is provisioned only for parity, not used; see §8.4). Real ROK equivalent:
 `client → DNS → real ALB (in the VPC) → Traefik NodePort → same Ingress → Service → pod` (no socat; the
 ALB reaches the nodes natively because it lives in the same network).
 
@@ -641,7 +587,7 @@ ALB reaches the nodes natively because it lives in the same network).
 
 ROK runs **mailpit** in-cluster as a throwaway mail sink for lower envs — no real email, no SES.
 It's installed exactly like ROK's other add-ons: the upstream `jouve/mailpit` Helm chart + a
-**values file** (`k8s/mailpit-values.yaml`, mirroring `rok-scaleout/manifests/values/mailpit_values.yaml`),
+**values file** (`k8s/mailpit/values.yaml`, mirroring `rok-scaleout/manifests/values/mailpit_values.yaml`),
 into a dedicated `mailhog` namespace. Same chart/image ROK pins (chart `0.32.5`, image
 `axllent/mailpit:v1.29.6`) and the same security-context hardening; the lab drops only ROK's EBS PVC
 (no storageClass here — ephemeral sink) and htpasswd auth (so the Phase-9.2 mailer sends plain SMTP).
@@ -650,7 +596,7 @@ into a dedicated `mailhog` namespace. Same chart/image ROK pins (chart `0.32.5`,
 helm repo add jouve https://jouve.github.io/charts
 helm repo update
 kubectl create namespace mailhog
-helm install mailpit jouve/mailpit -n mailhog --version 0.32.5 -f k8s/mailpit-values.yaml
+helm install mailpit jouve/mailpit -n mailhog --version 0.32.5 -f k8s/mailpit/values.yaml
 kubectl -n mailhog rollout status deploy/mailpit --timeout=180s
 ```
 Result: one `mailpit` pod **Running** (non-root uid 1001, read-only rootfs, `emptyDir` for data since
@@ -669,7 +615,7 @@ Fix (no per-rebuild Windows edit): serve mailpit under a base path and route it 
 - Ingress is **host-less** on `path: /mailpit` (more specific than the frontend's `/`, so no collision).
 Both reached through the same socat bridge + Traefik NodePort 30080 as the app.
 ```bash
-kubectl apply -f k8s/mailpit-ingress.yaml
+kubectl apply -f k8s/mailpit/ingress.yaml
 kubectl -n mailhog get pods,svc,ingress
 ```
 Then open **`http://localhost:30080/mailpit`** — the empty mailpit inbox loads in Windows Chrome, no
@@ -695,7 +641,7 @@ Chart wiring:
 - Ingress path `/api/email` — more specific than backend's `/api`, so Traefik routes them apart.
 - `secretEnv: {SMTP_HOST: Smtp__Host, SMTP_PORT: Smtp__Port}` — ESO's `dataFrom.extract` pulls every
   key of the general secret into `rok-mailer-secret`; these two become env vars.
-- New ArgoCD app `k8s/argocd/rok-mailer-development.yaml` (flips mailer on, disables the rest);
+- New ArgoCD app `k8s/argocd/applications/rok-mailer-development.yaml` (flips mailer on, disables the rest);
   `mailer.enabled=false` added to the backend/frontend/worker apps for isolation.
 
 **Terraform change:** the general secret's `Smtp__Host` moved `mailpit` → **`mailpit-smtp.mailhog`**
@@ -707,7 +653,7 @@ docker tag rok-mailer:v1 localhost:5000/rok-mailer:v1
 docker push localhost:5000/rok-mailer:v1
 terraform -chdir=terraform apply            # pushes the new Smtp__Host into Floci Secrets Manager
 git add charts/rok-app k8s/argocd apps/mailer terraform/main.tf && git commit -m "Phase 9.2: mailer workload -> mailpit SMTP sink" && git push
-kubectl apply -f k8s/argocd/rok-mailer-development.yaml
+kubectl apply -f k8s/argocd/applications/rok-mailer-development.yaml
 ```
 Verify + smoke test:
 ```bash
