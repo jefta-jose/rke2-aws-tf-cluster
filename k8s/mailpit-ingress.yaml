@@ -1,0 +1,31 @@
+# Phase 9.1 — mailpit UI Ingress. ROK exposes mailpit via a dedicated Traefik
+# entrypoint (mailhog, nodePort 30004) with its own IngressRoute + auth; the lab
+# reuses the single Traefik web entrypoint (30080). Host-LESS on the "/mailpit"
+# path so it's reachable at http://localhost:30080/mailpit with no Windows
+# hosts-file entry (the browser resolves `localhost` on its own; a hostname like
+# mailpit.rok.local would NXDOMAIN on the Windows side). "/mailpit" is more
+# specific than the frontend's host-less "/" rule, so Traefik routes them apart
+# with no collision.
+#
+# The path prefix must match mailpit's webroot (mailpit.webroot=mailpit in the
+# values file) so mailpit's own asset URLs line up under /mailpit.
+#
+# NOTE: mailpit lives in the `mailhog` namespace (ROK's naming); the chart names
+# the UI service `mailpit-http` on port 8025.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mailpit
+  namespace: mailhog
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /mailpit
+            pathType: Prefix
+            backend:
+              service:
+                name: mailpit-http
+                port:
+                  number: 8025

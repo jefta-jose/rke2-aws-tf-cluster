@@ -296,24 +296,21 @@ per-store endpoint field is needed. Result: job `Complete 1/1` in ~25s; controll
 cert-controller all `Running`; CRDs installed (only `external-secrets.io/v1` is served — `v1beta1` is
 retired in the 2.x line).
 
-### 6.2a — ClusterSecretStore + a synced ExternalSecret
+### 6.2a — ClusterSecretStore smoke-test (ESO ⇄ Floci connectivity)
 
-Manifest at `k8s/eso-floci-store.yaml` (three docs): a `floci-aws-creds` Secret holding dummy `test/test`
-(safe to commit — only auths to the local mock), a cluster-scoped `ClusterSecretStore`
-`floci-secrets-manager` referencing those creds, and a verification `ExternalSecret` that `extract`s all
-keys of `development-rok-general-secret` into a k8s Secret `rok-general-secret` in `default`. Apply +
-verify:
+Manifest at `k8s/eso-floci-store.yaml` (two docs): a `floci-aws-creds` Secret holding dummy `test/test`
+(safe to commit — only auths to the local mock) and a cluster-scoped `ClusterSecretStore`
+`floci-secrets-manager` referencing those creds. This is just the ESO connectivity smoke-test — the
+app's real secret sync uses **per-workload `SecretStore`s** rendered by the chart in Phase 8 (with creds
+in the app namespace). Apply + confirm the store validates (proves ESO reaches Floci Secrets Manager
+via the injected endpoint):
 ```bash
 kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/eso-floci-store.yaml
-kubectl get clustersecretstore floci-secrets-manager
-kubectl -n default get externalsecret rok-general-secret
-kubectl -n default get secret rok-general-secret -o go-template='{{range $k,$v := .data}}{{$k}}{{"\n"}}{{end}}'
+kubectl get clustersecretstore floci-secrets-manager   # -> Valid / READY True
 ```
-**Gotcha:** to list a Secret's *keys*, use `-o go-template` with `{{range $k,$v := .data}}` — kubectl
-`-o jsonpath` cannot iterate a map's keys (`{range $k,$v := .data}` is go-template syntax, silently
-prints nothing under jsonpath). Result: store `Valid`/`READY True`, ExternalSecret `SecretSynced`/`True`,
-target secret carries `ConnectionStrings__Default`, `Smtp__Host`, `Smtp__Port`; decoding `Smtp__Host`
-→ `mailpit`, proving the value round-tripped Floci Secrets Manager → ESO → k8s Secret. Phase 6.2 done.
+Result: store `Valid`/`READY True` — ESO authenticated to Floci and can read Secrets Manager. (Tip for
+inspecting a synced Secret's keys later: `kubectl get secret <name> -o go-template='{{range $k,$v :=
+.data}}{{$k}}{{"\n"}}{{end}}'` — `-o jsonpath` can't iterate a map's keys.) Phase 6.2 done.
 
 ---
 
@@ -466,48 +463,89 @@ That's all that's required — `registries.yaml` is what lets containerd reach t
 
 ---
 
-## Phase 8 — GitOps: ArgoCD deploys frontend + backend
+## Phase 8 — GitOps: ArgoCD deploys the workloads (map-driven chart)
 
-### 8.1 / 8.2 — the `rok-app` Helm chart (`charts/rok-app`)
+### 8.1 — the `rok-app` chart (`charts/rok-app/`, map-driven)
 
-One small chart mirroring ROK's split: **compute** (`therok_deployment`) = frontend + backend
-Deployments + **ClusterIP** Services; **infra** (`therok_v2`) = `ExternalSecret` + Traefik `Ingress`.
-Notes:
-- App Services are **ClusterIP**, not NodePort — the only NodePort in the path is Traefik's `30080`
-  (Phase 6). Path: `ALB :80 → Traefik NodePort 30080 → Ingress → ClusterIP svc`.
-- `imagePullSecrets` kept as an (empty) value to mirror ROK's `aws-registry`, but our registry is open.
-- Backend gets `SECRET_MESSAGE` from k8s Secret `rok-general-secret` via `secretKeyRef`.
-- Added `SECRET_MESSAGE` to the Floci secret in `terraform/main.tf` (`development_secret`) + `terraform
-  apply`. Verify: `aws --endpoint-url=http://localhost:4566 secretsmanager get-secret-value
-  --secret-id development-rok-general-secret --query SecretString --output text` shows all 4 keys.
-- **ESO ownership split** to avoid a duplicate `ExternalSecret`: `k8s/eso-floci-store.yaml` now holds
-  only the bootstrap (creds Secret + `ClusterSecretStore`); the app `ExternalSecret` lives in the chart.
-```bash
-helm lint charts/rok-app
-helm template rok-app charts/rok-app   # renders: 2 Deploys, 2 Svcs, Ingress, ExternalSecret
+Refactored to mirror the real `becklar_messaging_workloads` chart: a single `workloads:` map that the
+templates `range` over, so adding a workload = a values entry (no new template files). Full walkthrough
+in `charts/rok-app/README.md`. Layout:
 ```
-Result: lint clean, render shows correct image refs, backend `env: SECRET_MESSAGE`, Ingress
-(`/api`→backend, `/`→frontend, host `rok.local`), and the `ExternalSecret`.
-
-### 8.3 — ArgoCD Application syncs the chart (GitOps)
-
-`k8s/rok-app-application.yaml` (Application in `argocd` ns → repo `main`, path `charts/rok-app`, dest
-`default`, automated+prune+selfHeal). ArgoCD is pull-based, so the chart must be pushed first. Also
-deleted the stale manual `ExternalSecret` so the chart owns it.
+charts/rok-app/
+  Chart.yaml
+  values.yaml                # shape: workloads{frontend,backend,worker} + secretStoreAuth
+  values-development.yaml     # per-env overlay: image repos (local registry) + Secrets Manager remoteKeys
+  README.md                  # how it works + how to add a workload/environment
+  templates/
+    _helpers.tpl             # shared labels (rok-app.labels)
+    deployments.yaml         # Deployment per enabled workload                (sync-wave 0)
+    services.yaml            # ClusterIP Service per workload w/ service.enabled
+    ingress.yaml             # host-less Ingress PER workload w/ ingress.enabled
+    external-secrets.yaml    # ExternalSecret per workload that has a secretName (sync-wave -1)
+    secret-stores.yaml       # namespaced SecretStore per such workload         (sync-wave -2)
+```
+Key points:
+- **Workloads:** `frontend` (nginx — Service+Ingress `/`, no secret), `backend` (node API —
+  Service+Ingress `/api`, secret → `SECRET_MESSAGE`), `worker` (SQS consumer — no Service/Ingress,
+  ships `enabled: false` until Phase 9).
+- **Sync waves** order the ESO chain so dependencies exist first: SecretStore `-2` → ExternalSecret
+  `-1` → Deployment `0`.
+- **Per-workload `SecretStore`** (namespaced), not one ClusterSecretStore. Real ROK's store has NO auth
+  (IRSA). Floci has no IAM, so `secretStoreAuth.enabled: true` renders an `auth.secretRef` → a
+  `floci-aws-creds` Secret **in the release namespace** (bootstrapped in 8.3, never in git).
+- **Host-less Ingress**, one per workload (`rok-frontend` `/`, `rok-backend` `/api`) so the
+  one-app-per-workload model doesn't collide on a shared Ingress name; Traefik merges the path rules.
+  Host-less because Floci's ALB rewrites the `Host` header (8.4).
+- Backend's secret contents come from Floci `development-rok-general-secret` (`externalSecret.remoteKey`
+  in values-development.yaml), which carries `SECRET_MESSAGE`. That key was added to `terraform/main.tf`
+  (`development_secret`) + `terraform apply`; verify: `aws --endpoint-url=http://localhost:4566
+  secretsmanager get-secret-value --secret-id development-rok-general-secret --query SecretString
+  --output text`.
 ```bash
-git add charts/ apps/ vms/registries.yaml k8s/eso-floci-store.yaml k8s/rok-app-application.yaml terraform/main.tf commands.md
+helm lint charts/rok-app -f charts/rok-app/values-development.yaml
+helm template rok-backend charts/rok-app -f charts/rok-app/values-development.yaml \
+  --set workloads.frontend.enabled=false --set workloads.worker.enabled=false
+```
+Result: lint clean. Backend render → Service + Deployment (`secretKeyRef SECRET_MESSAGE`, image
+`192.168.122.1:5000/rok-backend:v1`), Ingress `/api`, ExternalSecret (wave -1), SecretStore (wave -2)
+with the Floci `auth.secretRef` block. Frontend render → Service+Deployment+Ingress `/` and **zero**
+secret machinery.
+
+### 8.2 — ArgoCD Applications (one per workload, `k8s/argocd/`)
+
+Mirrors becklar's per-workload apps: each `Application` points at the **same** chart but enables only
+its own workload via `helm.parameters` (the others `=false`), reads `values-development.yaml`, and
+deploys to namespace `rok-development`.
+```
+k8s/argocd/rok-frontend-development.yaml   # enables frontend only
+k8s/argocd/rok-backend-development.yaml    # enables backend only
+k8s/argocd/rok-worker-development.yaml     # enables worker only — applied in Phase 9
+```
+
+### 8.3 — deploy: push, bootstrap the namespace, apply the apps
+
+ArgoCD is pull-based, so push the chart first. Then create the release namespace and the Floci creds
+the per-workload SecretStores read (creds live in the SAME namespace — the lab stand-in for ROK's
+IRSA), and apply the two apps that are live now (worker waits for Phase 9).
+```bash
+git add -A charts/ k8s/argocd apps/ terraform/main.tf commands.md
 git commit -m "..." && git push origin main
-kubectl delete externalsecret rok-general-secret -n default --ignore-not-found
-kubectl apply -f k8s/rok-app-application.yaml
+kubectl create namespace rok-development
+kubectl -n rok-development create secret generic floci-aws-creds \
+  --from-literal=access-key-id=test --from-literal=secret-access-key=test
+kubectl apply -f k8s/argocd/rok-frontend-development.yaml
+kubectl apply -f k8s/argocd/rok-backend-development.yaml
 ```
-Result: app `Synced`; both pods `1/1 Running`; **images pulled from `192.168.122.1:5000` by the kubelet
-(Phase 7 proven via GitOps, no manual pull)**; ESO `SecretSynced/Ready=True`, secret `rok-general-secret`
-has all 4 keys. End-to-end **through Traefik** (NodePort 30080, `Host: rok.local`):
+Verify (ArgoCD auto-syncs in ~30–60s):
 ```bash
-curl -s -H "Host: rok.local" http://192.168.122.138:30080/api/hello
-# {"message":"hello from the ROK-lab backend","secret":"injected from Floci Secrets Manager via ESO",...}
-curl -s -H "Host: rok.local" http://192.168.122.138:30080/           # frontend HTML
+kubectl get pods,svc,ingress,externalsecret,secretstore -n rok-development
+curl -s http://localhost:30080/api/hello; echo
 ```
+Result: frontend + backend pods `1/1 Running` in `rok-development`; **images pulled from
+`192.168.122.1:5000` by the kubelet (Phase 7 proven via GitOps, no manual pull)**; per-workload
+SecretStores `Valid`, ExternalSecrets `SecretSynced`; `rok-backend-secret` carries the synced keys; the
+curl (via the socat bridge → Traefik NodePort 30080 → host-less Ingress → ClusterIP → pod) returns the
+JSON with the injected `SECRET_MESSAGE`.
 **Gotcha:** ArgoCD health stays `Progressing` forever because Traefik doesn't populate
 `Ingress.status.loadBalancer` (`LB={}`) and ArgoCD waits on it. Purely cosmetic — traffic works. Fix if
 desired: set Traefik `providers.kubernetesIngress.ingressEndpoint` so it writes ingress status.
@@ -548,7 +586,7 @@ Floci publishes only `4566` to the host and its edge port routes the LB DNS to *
 parsing), so the LB data-plane is reached from **inside Floci's network** (a busybox sharing its netns):
 ```bash
 docker run --rm --network container:floci-docker-floci-1 busybox \
-  wget -qO- -T6 --header="Host: rok.local" "http://$ALB/api/hello"
+  wget -qO- -T6 "http://$ALB/api/hello"   # no Host header needed — Ingress is host-less (Floci rewrites Host anyway)
 # {"message":"hello from the ROK-lab backend","host":"rok-backend-...","secret":"injected from Floci
 #  Secrets Manager via ESO","time":"..."}   <- full path: ALB -> bridge -> Traefik -> backend -> ESO secret
 ```
@@ -587,7 +625,7 @@ Browser/curl (Windows or WSL2)  GET http://localhost:30080/
   │  page JS runs fetch("/api/hello") — same origin, repeats [1]→[3] with path "/api"
   ▼
 [3'] Traefik "/api" → rok-backend:8080 → [6] rok-backend pod (node) → JSON
-  │  SECRET_MESSAGE env ← k8s Secret rok-general-secret ← ESO ← Floci Secrets Manager
+  │  SECRET_MESSAGE env ← k8s Secret rok-backend-secret ← ESO ← Floci Secrets Manager
   ▼
   {"message":"…","host":"rok-backend-…","secret":"injected from Floci Secrets Manager via ESO", …}
 ```
@@ -597,3 +635,46 @@ NodePort` is the direct route; the ALB (§8.4) is validated separately. Real ROK
 ALB reaches the nodes natively because it lives in the same network).
 
 > **Phase 8 done.** Local browser access works; the full ROK request path is understood hop-by-hop.
+---
+
+## Phase 9.1 — in-cluster mailpit (test mail sink), the ROK way
+
+ROK runs **mailpit** in-cluster as a throwaway mail sink for lower envs — no real email, no SES.
+It's installed exactly like ROK's other add-ons: the upstream `jouve/mailpit` Helm chart + a
+**values file** (`k8s/mailpit-values.yaml`, mirroring `rok-scaleout/manifests/values/mailpit_values.yaml`),
+into a dedicated `mailhog` namespace. Same chart/image ROK pins (chart `0.32.5`, image
+`axllent/mailpit:v1.29.6`) and the same security-context hardening; the lab drops only ROK's EBS PVC
+(no storageClass here — ephemeral sink) and htpasswd auth (so the Phase-9.2 mailer sends plain SMTP).
+
+```bash
+helm repo add jouve https://jouve.github.io/charts
+helm repo update
+kubectl create namespace mailhog
+helm install mailpit jouve/mailpit -n mailhog --version 0.32.5 -f k8s/mailpit-values.yaml
+kubectl -n mailhog rollout status deploy/mailpit --timeout=180s
+```
+Result: one `mailpit` pod **Running** (non-root uid 1001, read-only rootfs, `emptyDir` for data since
+persistence is off), and two ClusterIP services — `mailpit-http` (`:8025`, UI) and `mailpit-smtp`
+(`:1025`, inbound mail). The mailer will target `mailpit-smtp.mailhog:1025` cross-namespace in 9.2.
+
+### 9.1a — expose the UI host-less on `/mailpit` (reuse `localhost`, no Windows hosts file)
+
+First attempt used a hostname Ingress (`mailpit.rok.local`) like ArgoCD — but Windows Chrome returned
+`DNS_PROBE_FINISHED_NXDOMAIN`: the browser can't resolve that name, and WSL2's `/etc/hosts` doesn't help
+a **Windows** browser (it reads `C:\Windows\System32\drivers\etc\hosts`). NXDOMAIN is a *resolution*
+failure — upstream of socat, which is why the frontend (`localhost:30080`) still worked fine.
+
+Fix (no per-rebuild Windows edit): serve mailpit under a base path and route it host-less.
+- `mailpit.webroot: mailpit` in the values file → mailpit serves the UI + assets under `/mailpit`.
+- Ingress is **host-less** on `path: /mailpit` (more specific than the frontend's `/`, so no collision).
+Both reached through the same socat bridge + Traefik NodePort 30080 as the app.
+```bash
+kubectl apply -f k8s/mailpit-ingress.yaml
+kubectl -n mailhog get pods,svc,ingress
+```
+Then open **`http://localhost:30080/mailpit`** — the empty mailpit inbox loads in Windows Chrome, no
+hosts entry needed. Path: `browser → localhost:30080 (WSL2 mirrored) → socat → VM:30080 → Traefik
+(/mailpit prefix) → mailpit-http:8025`.
+
+> **9.1 done.** mailpit is an in-cluster test sink in `mailhog`, UI at `localhost:30080/mailpit`,
+> SMTP waiting on `mailpit-smtp.mailhog:1025`. Next (9.2): a `mailer` workload that sends to it.

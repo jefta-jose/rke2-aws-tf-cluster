@@ -1,0 +1,69 @@
+# Phase 9.1 — mailpit as an in-cluster TEST mail sink, deployed the ROK way:
+# the upstream jouve/mailpit Helm chart + this values file, installed with
+#   helm install mailpit jouve/mailpit -n mailhog --version 0.32.5 -f k8s/mailpit-values.yaml
+# This mirrors ROK's manifests/values/mailpit_values.yaml. No AWS/SES anywhere —
+# the mailer (9.2) sends SMTP straight to this pod.
+#
+# Chart/image pinned to the same versions ROK runs.
+image:
+  registry: docker.io
+  repository: axllent/mailpit
+  tag: v1.29.6
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+# Serve the UI under a base path (MP_WEBROOT) instead of "/". Lets us reach mailpit
+# host-less at http://localhost:30080/mailpit — reusing the `localhost` name Windows
+# already resolves (no Windows hosts-file entry, no per-rebuild fixup), and keeping
+# it off the frontend's "/" catch-all. ROK doesn't need this (dedicated hostname).
+mailpit:
+  webroot: mailpit
+
+# Two ClusterIP services, exactly like ROK: mailpit-http (UI) + mailpit-smtp (inbound mail).
+service:
+  http:
+    type: ClusterIP
+    port: 8025
+  smtp:
+    type: ClusterIP
+    port: 1025
+
+# ROK backs mailpit with a 2Gi EBS PVC (storageClass rok-lower-mailhog-ebs-sc).
+# The lab has no such storageClass and this is a throwaway test sink, so keep it
+# ephemeral — a pod restart wipes captured mail, which is fine.
+persistence:
+  enabled: false
+
+# ROK sets ingress.enabled=false and routes mailpit through DEDICATED Traefik
+# entrypoints (mailhog / mailhog-smtp on nodePorts 30004/30005) + WAF + htpasswd
+# auth. The lab has one Traefik web entrypoint (30080), so we keep the chart
+# ingress off here too and add our own host-less /mailpit Ingress
+# (k8s/mailpit-ingress.yaml) on that shared entrypoint.
+ingress:
+  enabled: false
+
+# ROK secures the UI + SMTP with htpasswd (existingSecret mailpit-auth, created
+# imperatively at deploy time — never committed). The lab skips auth so the mailer
+# can send unauthenticated SMTP to mailpit-smtp.mailhog:1025 with zero setup.
+
+# Security hardening — copied verbatim from ROK's mailpit_values.yaml. Runs as a
+# non-root user (1001) with all capabilities dropped, a read-only root filesystem,
+# and the default seccomp profile. With persistence off, the chart mounts an
+# emptyDir for mailpit's data so the read-only root FS is still fine.
+podSecurityContext:
+  enabled: true
+  fsGroup: 1001
+
+containerSecurityContext:
+  enabled: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  runAsUser: 1001
+  runAsGroup: 1001
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  seccompProfile:
+    type: RuntimeDefault

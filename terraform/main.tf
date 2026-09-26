@@ -30,7 +30,7 @@ module "development_secret" {
   application = "general"
   secret_value = jsonencode({
     ConnectionStrings__Default = "Server=rds;Database=rok;User Id=sa;Password=Lab_Passw0rd!;"
-    Smtp__Host                 = "mailpit"
+    Smtp__Host                 = "mailpit-smtp.mailhog"
     Smtp__Port                 = "1025"
     SECRET_MESSAGE             = "injected from Floci Secrets Manager via ESO"
   })

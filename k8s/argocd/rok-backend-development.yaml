@@ -19,6 +19,8 @@ spec:
           value: "false"
         - name: workloads.worker.enabled
           value: "false"
+        - name: workloads.mailer.enabled
+          value: "false"
   destination:
     server: https://kubernetes.default.svc
     namespace: rok-development

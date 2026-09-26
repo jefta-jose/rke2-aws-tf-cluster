@@ -112,3 +112,46 @@ workloads:
     secretEnv:
       SQS_QUEUE_URL: SQS_QUEUE_URL
     resources: {}
+
+  # ---- server: mailer — POST /api/email -> SMTP to the in-cluster mailpit sink (Phase 9.2) ----
+  # Ships disabled (like worker) so the frontend/backend apps stay clean; the mailer
+  # Application flips it on.
+  mailer:
+    enabled: false
+    name: rok-mailer
+    replicas: 1
+    image:
+      repository: ""
+      tag: ""
+      pullPolicy: IfNotPresent
+    service:
+      enabled: true
+      port: 8080
+      targetPort: 8080
+    ingress:
+      enabled: true
+      path: /api/email          # more specific than backend's /api, so Traefik routes them apart
+      pathType: Prefix
+    env:
+      AWS_REGION: us-east-1
+    # SMTP host/port come from the shared general secret via ESO (same remoteKey as backend).
+    # dataFrom pulls every key of development-rok-general-secret; secretEnv picks the two we use.
+    secretName: rok-mailer-secret
+    secretStore:
+      name: rok-mailer-secret-store
+      provider:
+        aws:
+          service: SecretsManager
+          region: us-east-1
+    externalSecret:
+      refreshInterval: 1m
+      creationPolicy: Owner
+      remoteKey: ""             # set per-env (development-rok-general-secret)
+    secretEnv:
+      SMTP_HOST: Smtp__Host     # -> mailpit-smtp.mailhog
+      SMTP_PORT: Smtp__Port     # -> 1025
+    readinessProbe:
+      httpGet: { path: /healthz, port: 8080 }
+    livenessProbe:
+      httpGet: { path: /healthz, port: 8080 }
+    resources: {}

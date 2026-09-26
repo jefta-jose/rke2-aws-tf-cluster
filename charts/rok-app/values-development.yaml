@@ -17,3 +17,9 @@ workloads:
       tag: v1
     externalSecret:
       remoteKey: development-rok-worker-secret
+  mailer:
+    image:
+      repository: 192.168.122.1:5000/rok-mailer
+      tag: v1
+    externalSecret:
+      remoteKey: development-rok-general-secret

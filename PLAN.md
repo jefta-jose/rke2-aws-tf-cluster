@@ -34,15 +34,14 @@ confirms the toolchain before we commit.
 ```
         WSL2 host (Ubuntu)
         ┌─────────────────────────────────────────────────────────┐
-        │  Docker network  "roklab"                                 │
-        │   ┌───────────┐   ┌──────────┐                            │
-        │   │  Floci    │   │ mailpit  │   (AWS APIs @ :4566)        │
-        │   │  :4566    │   │ :8025 UI │                            │
-        │   │  ECR/SM/  │   │ :1025    │                            │
-        │   │  SQS/SES/ │   └──────────┘                            │
-        │   │  ALB/RDS/ │                                           │
-        │   │  WAF/IAM  │                                           │
-        │   └─────┬─────┘                                           │
+        │  Host containers                                          │
+        │   ┌───────────┐   ┌──────────────┐  (AWS APIs @ :4566)     │
+        │   │  Floci    │   │ host compose │                         │
+        │   │  :4566    │   │ registry:2   │                         │
+        │   │  ECR/SM/  │   │  :5000 (ECR) │                         │
+        │   │  SQS/SNS/ │   │ postgres     │                         │
+        │   │  ALB/IAM  │   │  :5432 (P10) │                         │
+        │   └─────┬─────┘   └──────────────┘                         │
         │         │ ALB listener forwards to  VM_IP:NodePort         │
         └─────────┼─────────────────────────────────────────────────┘
                   │  (host ↔ VM routing, Phase 5)
@@ -51,9 +50,10 @@ confirms the toolchain before we commit.
         │  RKE2 server (etcd+control)     │◀──│  RKE2 agent        │
         │  Traefik (NodePort 30080)       │9345 join              │
         │  ArgoCD, External Secrets Op    │   │  workloads         │
-        │  frontend + backend pods        │   │                   │
+        │  frontend/backend/mailer +      │   │  consumer (P10)    │
+        │  mailpit sink (P9)              │   │                   │
         └─────────────────────────────────┘   └───────────────────┘
-   Pods reach AWS at http://<host-ip>:4566 (ECR pulls, ESO GetSecretValue).
+   Pods reach AWS/Postgres at http://<host-ip>:4566 / :5432 (ECR, ESO, SQS/SNS, DB).
 ```
 
 ## How we work (same as the materialized-views lab)
@@ -70,11 +70,12 @@ confirms the toolchain before we commit.
 |---|---|---|
 | ECR | **Real** `registry:2`, docker push/pull | Use as the real image registry |
 | Secrets Manager | **Real** storage, GetSecretValue | External Secrets Operator syncs from it |
-| SQS + DLQ | **Real** | Email-worker queue + DLQ |
-| SES | Emulated + **SMTP relay to mailpit** | SES → mailpit, like ROK lower envs |
+| SQS + DLQ | **Real** | SNS→SQS consumer queue + DLQ (Phase 10) |
+| SNS | **Real** | Producer publishes events; SNS→SQS fan-out (Phase 10) |
+| SES | **Not used** — mailpit runs **in-cluster** as a test sink | Frontend → mailer → mailpit (SMTP), no cloud email (Phase 9) |
 | ALB (ELBv2) | **Real** — forwards HTTP by path/host to targets | ALB → Traefik NodePort |
-| RDS SQL Server | **Real** `mssql/server:2022` container | Backend DB (optional phase) |
-| IAM / KMS / Lambda / SNS | Real enough | Use as needed |
+| RDS SQL Server | **Not used** — **Postgres via docker-compose** on the host | App DB for the SNS→SQS consumer; creds in Secrets Manager (Phase 10) |
+| IAM / KMS / Lambda | Real enough | Use as needed |
 | WAFv2 | **Mock** (config-only, no filtering) | IaC in Terraform; real filtering = Traefik middleware (optional) |
 | Route53 | **Mock** (no DNS resolution) | Use `/etc/hosts` / Docker DNS |
 | EKS | Real but single-node **k3s**, not RKE2 | Not used — we run real RKE2 in VMs |
@@ -93,9 +94,9 @@ Confirm the host can do everything before we build.
 → Learn: what the lab needs and that the VM path is viable here.
 
 ### Phase 1 — Floci up (the local AWS)
-- 1.1 Write `docker-compose.yml` for Floci: shared network `roklab`, docker socket mount,
-  `FLOCI_HOSTNAME=floci`, persistent storage, published ports (4566, RDS proxy 7001–7099), SES→mailpit
-  env, plus a `mailpit` service.
+- 1.1 Write `docker-compose.yml` for Floci: shared network, docker socket mount, persistent storage,
+  published port `4566`. (mailpit is NOT here — it's deployed **in-cluster** in Phase 9; Postgres is a
+  separate host compose in Phase 10.)
 - 1.2 `docker compose up -d`; verify `aws --endpoint-url=http://localhost:4566 sts get-caller-identity`.
 - 1.3 Open the Floci web console (`/_floci/ui`) and mailpit UI.
 → Learn: Floci = AWS on localhost; the wire protocol is real.
@@ -151,23 +152,37 @@ Following ROK's `setup-env.md` order:
 - 8.3 Hit the app end-to-end **through the Floci ALB** → Traefik → frontend/backend.
 → Learn: the whole ROK GitOps loop, ingress routing, secret injection — end to end.
 
-### Phase 9 — mailpit + SES + an SQS worker
-- 9.1 Wire Floci SES → mailpit (done in compose); verify a test SES send lands in mailpit.
-- 9.2 Give the backend an endpoint that enqueues to SQS; deploy a small worker that reads SQS and
-  sends via SES → watch it appear in mailpit; exercise the DLQ.
-→ Learn: ROK's email-worker + mailpit + SQS/DLQ pattern.
+### Phase 9 — In-cluster mailpit + a mailer wired to the frontend
+mailpit is a **test mail sink deployed in the cluster** (as ROK does in lower envs) — no real email,
+no SES, no AWS in the path. The frontend sends a message straight through to mailpit over SMTP.
+- 9.1 Deploy mailpit **into the cluster**: a Deployment + Service `mailpit` (SMTP `:1025` ClusterIP,
+  web UI `:8025` exposed via a host-less Ingress path / NodePort). Confirm the UI loads.
+- 9.2 Add a new **mailer** workload to the `rok-app` chart: a small Node service with
+  `POST /api/email {to,subject,body}` that opens an SMTP connection to `mailpit:1025` and sends. SMTP
+  host/port come from `development-rok-general-secret` (`Smtp__Host`/`Smtp__Port`) via ESO. Service +
+  host-less Ingress (`/api/email`).
+- 9.3 Frontend: add a simple send-email form → `fetch("/api/email", …)` → mailer → mailpit. Submit
+  from the browser and watch the message land in the mailpit UI.
+→ Learn: the ROK in-cluster mailpit test-sink pattern, a frontend→service→mailpit hop, and service
+  config pulled from Secrets Manager via ESO — all cloud-email-free.
 
-### Phase 10 — A service that interacts with ECS
-- 10.1 Run an ECS (Fargate-style) service on Floci (real container, published port) — e.g. a small
-  API the cluster backend calls, or an SQS consumer.
-- 10.2 Have the in-cluster backend interact with it; note Floci ECS limits (no real ALB/CloudMap →
-  reach it by published port).
-→ Learn: ECS real container execution and where the emulation stops.
-
-### Phase 11 (optional) — RDS SQL Server + WAF middleware
-- 11.1 Create a Floci RDS SQL Server instance via Terraform; point the backend at it; run a query.
-- 11.2 Add real request filtering as a Traefik/Coraza middleware to stand in for WAF behavior.
-→ Learn: RDS SQL Server round-trip; why Floci WAF is IaC-only and how to get real filtering.
+### Phase 10 — SNS→SQS event pipeline + Postgres (producer/consumer)
+A real fan-out: a **producer** publishes events to **SNS**, SNS delivers to an **SQS** queue, and a
+**consumer** processes them and writes to **Postgres**. Postgres runs as its own docker-compose (like
+the registry), NOT RDS/Floci; every backend service reads its creds from Floci Secrets Manager via ESO.
+- 10.1 Stand up **Postgres** via a `postgres/docker-compose.yml` on the host (published on
+  `192.168.122.1:5432` — the same host-gateway route pods already use for the registry/Floci). Create
+  the app DB + an `events` table.
+- 10.2 Terraform: put the Postgres creds in Floci Secrets Manager (`development-rok-db-secret`) and
+  create the **SNS topic** + an **SQS queue subscribed to it** (SNS→SQS fan-out).
+- 10.3 **Producer:** a frontend action (button/form) → `POST` to a publisher endpoint that publishes
+  an event to SNS (through Floci at `http://192.168.122.1:4566`).
+- 10.4 **Consumer** workload: long-polls the SNS-subscribed SQS queue, and for each event writes a row
+  to Postgres (DB creds from ESO). Uses the map-driven chart's worker shape (no inbound networking).
+- 10.5 End-to-end: click in the frontend → SNS → SQS → consumer → row lands in Postgres. Verify with a
+  `SELECT`; exercise the DLQ with a poison event.
+→ Learn: SNS→SQS fan-out, a genuine producer/consumer split, pod↔Floci runtime API calls, and a
+  cloud-agnostic Postgres whose creds live in Secrets Manager.
 
 ---
 
@@ -176,10 +191,13 @@ Following ROK's `setup-env.md` order:
 - Phase 6: Traefik, ESO, ArgoCD all `Running`; ArgoCD reachable.
 - Phase 8: browser/curl through the Floci ALB returns the frontend, which reaches the backend; a
   secret value visible in a pod originated from Floci Secrets Manager.
-- Phase 9: a message enqueued to SQS results in an email visible in mailpit.
+- Phase 9: a message sent from the frontend form appears in the in-cluster mailpit UI (no AWS).
+- Phase 10: a frontend action publishes to SNS → the SQS consumer writes a row visible in Postgres.
 
 ## Cleanup notes (for later)
-- `docker compose down -v` removes Floci + mailpit + volumes.
+- `docker compose down -v` in `~/floci-docker` removes Floci + volumes; the `registry:2` and the
+  Phase-10 Postgres composes are separate stacks (tear down independently). mailpit is in-cluster
+  (`kubectl delete`).
 - Delete the VMs with the chosen tool (e.g. `multipass delete --purge rok-server rok-agent-1`).
 - `terraform destroy` against Floci (or just drop the Floci volume).
 - Everything else is plain files under this directory.
