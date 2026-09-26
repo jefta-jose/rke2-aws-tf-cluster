@@ -20,9 +20,17 @@ provider "aws" {
   s3_use_path_style           = true
 
   endpoints {
-    sts            = "http://localhost:4566"
-    iam            = "http://localhost:4566"
-    ec2            = "http://localhost:4566"
+    sts = "http://localhost:4566"
+    iam = "http://localhost:4566"
+    ec2 = "http://localhost:4566"
+    # ecr / elbv2 are wired up only to mirror ROK's infra — the lab does NOT use them
+    # in the real traffic/image paths (see the ALB/WAF note in main.tf):
+    #   - ECR: no repos are provisioned here; images ship via a host-local registry:2
+    #     instead, because Floci's ECR routes by *.localhost Host headers that the
+    #     Docker Desktop engine can't resolve (resolving the ECR domain failed).
+    #   - ALB (elbv2): provisioned for parity but bypassed. Floci can't route into the
+    #     libvirt subnet and its LB rewrites the Host header, so traffic reaches the
+    #     cluster via a socat bridge (host -> Traefik NodePort), not the ALB.
     ecr            = "http://localhost:4566"
     secretsmanager = "http://localhost:4566"
     sqs            = "http://localhost:4566"

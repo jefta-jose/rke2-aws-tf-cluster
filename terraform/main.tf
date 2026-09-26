@@ -108,7 +108,11 @@ resource "aws_iam_role_policy_attachment" "node_ses_send" {
 }
 
 ############################
-# ALB — HTTP -> Traefik NodePort target group (targets registered in Phase 5)
+# ALB + WAF — provisioned ONLY to mirror ROK's infra; NOT used in the lab's request path.
+# Floci's ALB can't route into the libvirt subnet (192.168.122.0/24) — a VM-IP target just
+# times out — and Floci's LB rewrites the Host header, so a host-scoped Ingress never matches.
+# So the lab reaches the cluster via a socat bridge (host -> Traefik NodePort 30080), not the
+# ALB. We keep these resources for parity with real ROK but register no targets against them.
 ############################
 module "alb" {
   source           = "./modules/alb"
