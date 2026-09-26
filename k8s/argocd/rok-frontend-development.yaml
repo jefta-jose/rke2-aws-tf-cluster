@@ -1,0 +1,32 @@
+# One Application per workload (mirrors argocd/becklar-messaging-development.yaml).
+# This app owns ONLY the frontend: it enables workloads.frontend and disables the rest
+# via helm.parameters, so the same chart yields just the frontend's resources here.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rok-frontend-development
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
+    targetRevision: main
+    path: charts/rok-app
+    helm:
+      releaseName: rok-frontend-development
+      valueFiles:
+        - values-development.yaml
+      parameters:
+        - name: workloads.backend.enabled
+          value: "false"
+        - name: workloads.worker.enabled
+          value: "false"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rok-development
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

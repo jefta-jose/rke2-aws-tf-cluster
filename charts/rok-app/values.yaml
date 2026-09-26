@@ -1,28 +1,114 @@
-# Images come from the local registry:2 on the virbr0 gateway (Phase 7).
-# ROK pulls from ECR with an `aws-registry` imagePullSecret rotated by a CronJob;
-# our lab registry is open, so imagePullSecrets stays empty (shape preserved).
-image:
-  registry: "192.168.122.1:5000"
-  pullPolicy: IfNotPresent
-imagePullSecrets: []   # ROK: [{ name: aws-registry }]
+# rok-app — map-driven chart (mirrors becklar_messaging_workloads).
+# Add a workload = add an entry under `workloads:`; the templates range over it,
+# so no new template files are needed. Per-env image repos + remoteKeys live in
+# values-<env>.yaml (see values-development.yaml).
 
-frontend:
-  name: rok-frontend
-  repository: rok-frontend
-  tag: v1
-  replicas: 1
-  port: 80
+imagePullSecrets: []            # ROK: [{ name: aws-registry }]; our local registry is open
+nodeSelector: {}                # lab: single worker node; ROK pins node-role.kubernetes.io/worker
+podAnnotations: {}
+terminationGracePeriodSeconds: 30
 
-backend:
-  name: rok-backend
-  repository: rok-backend
-  tag: v1
-  replicas: 1
-  port: 8080
+# LAB-ONLY: the per-workload SecretStores need AWS creds because Floci isn't IRSA.
+# Real ROK sets enabled: false — ESO authenticates via the node's IAM role (secretless),
+# so the rendered SecretStore has NO auth block at all. This Secret is bootstrapped once
+# into the release namespace (not in git — it's a credential). See commands.md.
+secretStoreAuth:
+  enabled: true
+  secretName: floci-aws-creds
+  accessKeyIDKey: access-key-id
+  secretAccessKeyKey: secret-access-key
 
-# ---- infra layer, wired in step 8.2 (left off for the compute-only render) ----
-externalSecret:
-  enabled: true         # ESO-synced secret -> backend SECRET_MESSAGE env
-ingress:
-  enabled: true         # Traefik Ingress: / -> frontend, /api -> backend
-  host: rok.local
+workloads:
+  # ---- server: static frontend (no secret) ----
+  frontend:
+    enabled: true
+    name: rok-frontend
+    replicas: 1
+    image:
+      repository: ""            # set per-env in values-<env>.yaml
+      tag: ""
+      pullPolicy: IfNotPresent
+    service:
+      enabled: true
+      port: 80
+      targetPort: 80
+    ingress:
+      enabled: true
+      path: /
+      pathType: Prefix
+    env: {}
+    readinessProbe:
+      httpGet: { path: /, port: 80 }
+    livenessProbe:
+      httpGet: { path: /, port: 80 }
+    resources: {}
+
+  # ---- server: API backend (secret via ESO -> SECRET_MESSAGE) ----
+  backend:
+    enabled: true
+    name: rok-backend
+    replicas: 1
+    image:
+      repository: ""
+      tag: ""
+      pullPolicy: IfNotPresent
+    service:
+      enabled: true
+      port: 8080
+      targetPort: 8080
+    ingress:
+      enabled: true
+      path: /api
+      pathType: Prefix
+    env:
+      AWS_REGION: us-east-1
+    # secret plumbing (present => ExternalSecret + SecretStore are rendered)
+    secretName: rok-backend-secret
+    secretStore:
+      name: rok-backend-secret-store
+      provider:
+        aws:
+          service: SecretsManager
+          region: us-east-1
+    externalSecret:
+      refreshInterval: 1m
+      creationPolicy: Owner
+      remoteKey: ""              # set per-env (the AWS Secrets Manager key)
+    secretEnv:
+      SECRET_MESSAGE: SECRET_MESSAGE
+    readinessProbe:
+      httpGet: { path: /healthz, port: 8080 }
+    livenessProbe:
+      httpGet: { path: /healthz, port: 8080 }
+    resources: {}
+
+  # ---- worker: SQS consumer (no service/ingress) — Phase 9 flips enabled: true ----
+  worker:
+    enabled: false             # build+push the image and enable in Phase 9
+    name: rok-worker
+    replicas: 1
+    image:
+      repository: ""
+      tag: ""
+      pullPolicy: IfNotPresent
+    service:
+      enabled: false
+    ingress:
+      enabled: false
+    env:
+      AWS_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://192.168.122.1:4566   # Floci, reachable from pods via virbr0 gw
+    secretName: rok-worker-secret
+    secretStore:
+      name: rok-worker-secret-store
+      provider:
+        aws:
+          service: SecretsManager
+          region: us-east-1
+    externalSecret:
+      refreshInterval: 1m
+      creationPolicy: Owner
+      remoteKey: ""
+    secretEnv:
+      SQS_QUEUE_URL: SQS_QUEUE_URL
+    resources: {}

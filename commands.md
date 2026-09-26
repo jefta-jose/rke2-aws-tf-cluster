@@ -511,3 +511,89 @@ curl -s -H "Host: rok.local" http://192.168.122.138:30080/           # frontend 
 **Gotcha:** ArgoCD health stays `Progressing` forever because Traefik doesn't populate
 `Ingress.status.loadBalancer` (`LB={}`) and ArgoCD waits on it. Purely cosmetic — traffic works. Fix if
 desired: set Traefik `providers.kubernetesIngress.ingressEndpoint` so it writes ingress status.
+
+### 8.4 — the last hop: reach the app through the Floci ALB
+
+Path we're completing: `ALB :80 → Traefik NodePort 30080 → Ingress → pod`. Two Floci/Docker-Desktop
+topology facts force workarounds (none exist against real AWS):
+
+1. **Floci can't route into libvirt.** Floci runs in Docker Desktop's own VM; it has no route to the
+   RKE2 VMs' `192.168.122.0/24`, so an ALB target of `192.168.122.138:30080` health-checks as
+   `Target.Timeout`. But Floci *can* reach the host via `host.docker.internal` = `192.168.65.254`
+   (WSL2 mirrored networking). So bridge the host into libvirt and point the target at the host.
+2. **Floci's LB rewrites the Host header** to the LB's own DNS name before forwarding, so a host-scoped
+   Ingress rule never matches → Traefik 404. Fix: path-based (host-less) Ingress (done in this commit).
+```bash
+# (a) host bridge: host:30080 -> VM:30080  (the WSL2 host CAN route to virbr0).
+#     Deliberately NOT a service — re-run this (and steps b,c) on each cluster rebuild.
+#     nohup so it survives closing this terminal; `pkill -f 'socat.*30080'` to stop it.
+nohup socat TCP-LISTEN:30080,fork,reuseaddr TCP:192.168.122.138:30080 >/dev/null 2>&1 &
+
+# (b) re-point the ALB target at the address Floci can reach (drop the unreachable VM IPs)
+TG=$(terraform output -raw alb_target_group_arn)
+ALB=$(terraform output -raw alb_dns_name)
+AWS="aws --endpoint-url=http://localhost:4566 --region us-east-1"    # note: inline, zsh won't split it
+$AWS elbv2 deregister-targets --target-group-arn "$TG" --targets Id=192.168.122.138,Port=30080
+$AWS elbv2 deregister-targets --target-group-arn "$TG" --targets Id=192.168.122.105,Port=30080
+$AWS elbv2 register-targets   --target-group-arn "$TG" --targets Id=192.168.65.254,Port=30080
+
+# (c) health-check accepts 404: Traefik returns 404 for a host-less probe = "Traefik is alive"
+#     (JSON form required — the shorthand parser splits 200,404 into a list)
+$AWS elbv2 modify-target-group --target-group-arn "$TG" --matcher '{"HttpCode":"200,404"}'
+$AWS elbv2 describe-target-health --target-group-arn "$TG" \
+  --query 'TargetHealthDescriptions[].{S:TargetHealth.State,T:Target.Id}' --output table   # -> healthy
+```
+Result: target `192.168.65.254:30080` = **healthy**. Verify the whole chain end-to-end through the ALB.
+Floci publishes only `4566` to the host and its edge port routes the LB DNS to *S3* (host-based bucket
+parsing), so the LB data-plane is reached from **inside Floci's network** (a busybox sharing its netns):
+```bash
+docker run --rm --network container:floci-docker-floci-1 busybox \
+  wget -qO- -T6 --header="Host: rok.local" "http://$ALB/api/hello"
+# {"message":"hello from the ROK-lab backend","host":"rok-backend-...","secret":"injected from Floci
+#  Secrets Manager via ESO","time":"..."}   <- full path: ALB -> bridge -> Traefik -> backend -> ESO secret
+```
+
+> **Phase 8 checkpoint met:** GitOps (ArgoCD) deploys the chart from git; images pull from the local
+> registry; ESO injects the secret; and the app is reachable through the **full ROK path** ALB → Traefik
+> → pod. The `socat` bridge + host-target + host-less Ingress are Floci-topology accommodations, not part
+> of the real AWS design (real ALB routes into the VPC and preserves the Host header).
+
+### 8.5 — Access the app locally + the full request trace
+
+The `socat` bridge (§8.4a) also doubles as the **local browser entry point**: it listens on the WSL2
+host's `localhost:30080`, so — with the host-less Ingress — a plain request routes straight through.
+```bash
+curl -s http://localhost:30080/          | head -c 120   # frontend HTML (no Host header needed)
+curl -s http://localhost:30080/api/hello                 # backend JSON with the ESO secret
+# then open in the browser (Windows browser works too, via WSL2 mirrored localhost):
+#   http://localhost:30080/
+```
+**What actually happens on `GET http://localhost:30080/`:**
+```
+Browser/curl (Windows or WSL2)  GET http://localhost:30080/
+  │  localhost = WSL2 host (Windows reaches it via WSL2 mirrored networking)
+  ▼
+[1] socat @ WSL2 host 0.0.0.0:30080  ──splice TCP──▶ 192.168.122.138:30080
+  │  host routes via its virbr0 gateway NIC (192.168.122.1) into the libvirt subnet.
+  │  (bridge exists only because Floci can't reach libvirt — NOT part of real ROK)
+  ▼
+[2] rok-server VM :30080  = Traefik NodePort  (kube-proxy listens on :30080 every node)
+  ▼
+[3] Traefik pod — Ingress is HOST-LESS / path-based:  /api→rok-backend:8080, /→rok-frontend:80
+  │  path "/" → rok-frontend
+  ▼
+[4] Service rok-frontend (ClusterIP :80) ──kube-proxy──▶ [5] rok-frontend pod (nginx) → index.html
+  ▲
+  │  page JS runs fetch("/api/hello") — same origin, repeats [1]→[3] with path "/api"
+  ▼
+[3'] Traefik "/api" → rok-backend:8080 → [6] rok-backend pod (node) → JSON
+  │  SECRET_MESSAGE env ← k8s Secret rok-general-secret ← ESO ← Floci Secrets Manager
+  ▼
+  {"message":"…","host":"rok-backend-…","secret":"injected from Floci Secrets Manager via ESO", …}
+```
+**This local path deliberately skips the ALB** — for a human at a browser, `host → socat → Traefik
+NodePort` is the direct route; the ALB (§8.4) is validated separately. Real ROK equivalent:
+`client → DNS → real ALB (in the VPC) → Traefik NodePort → same Ingress → Service → pod` (no socat; the
+ALB reaches the nodes natively because it lives in the same network).
+
+> **Phase 8 done.** Local browser access works; the full ROK request path is understood hop-by-hop.

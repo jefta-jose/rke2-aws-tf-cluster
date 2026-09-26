@@ -1,0 +1,34 @@
+# Owns ONLY the SQS worker. Apply this in Phase 9 AFTER building+pushing the worker image
+# and creating the development-rok-worker-secret in Floci Secrets Manager. It also flips
+# workloads.worker.enabled back on (values.yaml ships it false so the other apps stay clean).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rok-worker-development
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
+    targetRevision: main
+    path: charts/rok-app
+    helm:
+      releaseName: rok-worker-development
+      valueFiles:
+        - values-development.yaml
+      parameters:
+        - name: workloads.worker.enabled
+          value: "true"
+        - name: workloads.frontend.enabled
+          value: "false"
+        - name: workloads.backend.enabled
+          value: "false"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rok-development
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

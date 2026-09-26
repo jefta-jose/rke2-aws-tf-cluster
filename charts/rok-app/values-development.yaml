@@ -1,0 +1,19 @@
+# development overlay — only the per-env bits (mirrors becklar values-development.yaml):
+# image repositories (our local registry) + the AWS Secrets Manager remoteKey per workload.
+workloads:
+  frontend:
+    image:
+      repository: 192.168.122.1:5000/rok-frontend
+      tag: v1
+  backend:
+    image:
+      repository: 192.168.122.1:5000/rok-backend
+      tag: v1
+    externalSecret:
+      remoteKey: development-rok-general-secret
+  worker:
+    image:
+      repository: 192.168.122.1:5000/rok-worker
+      tag: v1
+    externalSecret:
+      remoteKey: development-rok-worker-secret

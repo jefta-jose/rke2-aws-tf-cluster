@@ -1,0 +1,24 @@
+{{- /* ClusterIP Service per server workload. The selector matches the Deployment's pod
+       labels (instance + component) so traffic lands on the right pods. */ -}}
+{{- range $component, $workload := .Values.workloads }}
+{{- if and $workload.enabled (hasKey $workload "service") $workload.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $workload.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "rok-app.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component | kebabcase }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $component | kebabcase }}
+  ports:
+    - name: http
+      port: {{ $workload.service.port }}
+      targetPort: {{ $workload.service.targetPort | default $workload.service.port }}
+{{- end }}
+{{- end }}

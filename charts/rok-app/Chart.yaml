@@ -1,6 +1,6 @@
 apiVersion: v2
 name: rok-app
-description: ROK lab — frontend + backend. Mirrors therok_deployment (compute) + therok_v2 (infra), shrunk.
+description: ROK-lab workloads (frontend, backend, SQS worker) with external secrets — map-driven chart
 type: application
-version: 0.1.0
-appVersion: "1.0"
+version: 0.2.0
+appVersion: "1.0.0"

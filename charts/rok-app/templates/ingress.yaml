@@ -1,37 +1,32 @@
-{{- if .Values.ingress.enabled }}
-# Traefik Ingress (mirrors therok_v2). ALB :80 -> Traefik NodePort 30080 ->
-# these rules: /api -> backend, everything else -> frontend. /api is listed
-# first so it wins over the catch-all /.
-#
-# NOTE: routing is path-based with NO host constraint. Real AWS ALB preserves the
-# client Host header, so ROK can key its Ingress on a hostname. Floci's LB emulation
-# REWRITES Host to the LB's own DNS name before forwarding, which would never match a
-# host-scoped rule -> Traefik 404. Dropping `host:` lets Traefik match by path for any
-# host, so the app is reachable through the Floci ALB. (values.ingress.host kept for
-# reference but no longer used for routing.)
+{{- /*
+One host-less Ingress PER workload (named after the workload), not one shared "rok-app"
+Ingress. With the one-Application-per-workload model, each app renders only its own
+workload — a single shared Ingress name would make the frontend and backend apps fight
+over the same object. Separate names (rok-frontend / rok-backend) let Traefik merge the
+path rules cleanly. Host-less because Floci's ALB rewrites the Host header (see Phase 8.4).
+*/ -}}
+{{- range $component, $workload := .Values.workloads }}
+{{- if and $workload.enabled (hasKey $workload "ingress") $workload.ingress.enabled }}
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: rok-app
+  name: {{ $workload.name }}
+  namespace: {{ $.Release.Namespace }}
   labels:
-    app: rok-app
+    {{- include "rok-app.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component | kebabcase }}
 spec:
   ingressClassName: traefik
   rules:
     - http:
         paths:
-          - path: /api
-            pathType: Prefix
+          - path: {{ $workload.ingress.path }}
+            pathType: {{ $workload.ingress.pathType | default "Prefix" }}
             backend:
               service:
-                name: {{ .Values.backend.name }}
+                name: {{ $workload.name }}
                 port:
-                  number: {{ .Values.backend.port }}
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ .Values.frontend.name }}
-                port:
-                  number: {{ .Values.frontend.port }}
+                  number: {{ $workload.service.port }}
+{{- end }}
 {{- end }}

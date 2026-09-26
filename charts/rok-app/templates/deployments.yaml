@@ -1,0 +1,85 @@
+{{- /* One Deployment per enabled workload. `required`/`fail` make a missing value a loud
+       render error instead of a silently-broken manifest. */ -}}
+{{- range $component, $workload := .Values.workloads }}
+{{- if $workload.enabled }}
+{{- $name := required (printf "workloads.%s.name is required" $component) $workload.name }}
+{{- if not (hasKey $workload "replicas") }}
+{{- fail (printf "workloads.%s.replicas is required" $component) }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  labels:
+    {{- include "rok-app.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component | kebabcase }}
+spec:
+  replicas: {{ $workload.replicas }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $component | kebabcase }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ $.Chart.Name }}
+        app.kubernetes.io/instance: {{ $.Release.Name }}
+        app.kubernetes.io/component: {{ $component | kebabcase }}
+        app.kubernetes.io/part-of: rok-app
+      {{- with $.Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ required (printf "workloads.%s.image.repository is required" $component) $workload.image.repository }}:{{ required (printf "workloads.%s.image.tag is required" $component) $workload.image.tag }}
+          imagePullPolicy: {{ $workload.image.pullPolicy }}
+          {{- /* servers expose a port; workers don't */}}
+          {{- if and (hasKey $workload "service") $workload.service.enabled }}
+          ports:
+            - containerPort: {{ $workload.service.targetPort | default $workload.service.port }}
+          {{- end }}
+          {{- if or $workload.env $workload.secretEnv }}
+          env:
+            {{- /* env: literal values; secretEnv: keys pulled from the ESO-synced Secret */}}
+            {{- range $envName, $envValue := $workload.env }}
+            - name: {{ $envName }}
+              value: {{ $envValue | quote }}
+            {{- end }}
+            {{- range $envName, $secretKey := $workload.secretEnv }}
+            - name: {{ $envName }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required (printf "workloads.%s.secretName is required" $component) $workload.secretName }}
+                  key: {{ $secretKey }}
+            {{- end }}
+          {{- end }}
+          {{- with $workload.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $workload.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $workload.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+{{- end }}

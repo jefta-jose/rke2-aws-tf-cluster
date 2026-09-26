@@ -1,0 +1,30 @@
+# Owns ONLY the backend (Deployment + Service + Ingress /api + SecretStore + ExternalSecret).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rok-backend-development
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
+    targetRevision: main
+    path: charts/rok-app
+    helm:
+      releaseName: rok-backend-development
+      valueFiles:
+        - values-development.yaml
+      parameters:
+        - name: workloads.frontend.enabled
+          value: "false"
+        - name: workloads.worker.enabled
+          value: "false"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rok-development
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
