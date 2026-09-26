@@ -1,0 +1,28 @@
+# Images come from the local registry:2 on the virbr0 gateway (Phase 7).
+# ROK pulls from ECR with an `aws-registry` imagePullSecret rotated by a CronJob;
+# our lab registry is open, so imagePullSecrets stays empty (shape preserved).
+image:
+  registry: "192.168.122.1:5000"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []   # ROK: [{ name: aws-registry }]
+
+frontend:
+  name: rok-frontend
+  repository: rok-frontend
+  tag: v1
+  replicas: 1
+  port: 80
+
+backend:
+  name: rok-backend
+  repository: rok-backend
+  tag: v1
+  replicas: 1
+  port: 8080
+
+# ---- infra layer, wired in step 8.2 (left off for the compute-only render) ----
+externalSecret:
+  enabled: true         # ESO-synced secret -> backend SECRET_MESSAGE env
+ingress:
+  enabled: true         # Traefik Ingress: / -> frontend, /api -> backend
+  host: rok.local

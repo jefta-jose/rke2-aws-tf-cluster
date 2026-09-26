@@ -1,0 +1,23 @@
+# ArgoCD Application — GitOps for the rok-app chart (Phase 8).
+# ArgoCD clones the repo, renders charts/rok-app with its default values.yaml,
+# and syncs into the `default` namespace. Mirrors how ROK's ArgoCD tracks its charts.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rok-app
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
+    targetRevision: main
+    path: charts/rok-app
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

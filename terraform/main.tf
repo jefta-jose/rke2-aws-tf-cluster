@@ -21,19 +21,6 @@ module "network" {
 }
 
 ############################
-# ECR — frontend (ui) + backend (integration)
-############################
-module "ecr_frontend" {
-  source  = "./modules/ecr"
-  ecr_url = "development" # amarok-therok-development
-}
-
-module "ecr_backend" {
-  source  = "./modules/ecr"
-  ecr_url = "development-integration" # amarok-therok-development-integration
-}
-
-############################
 # Secrets Manager — development-rok-general-secret
 ############################
 module "development_secret" {
@@ -45,6 +32,7 @@ module "development_secret" {
     ConnectionStrings__Default = "Server=rds;Database=rok;User Id=sa;Password=Lab_Passw0rd!;"
     Smtp__Host                 = "mailpit"
     Smtp__Port                 = "1025"
+    SECRET_MESSAGE             = "injected from Floci Secrets Manager via ESO"
   })
 }
 

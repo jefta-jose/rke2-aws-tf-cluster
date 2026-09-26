@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ROK Lab</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 3rem auto; max-width: 40rem; }
+      pre { background: #f4f4f4; padding: 1rem; border-radius: 6px; overflow: auto; }
+      .ok { color: #157f3b; } .err { color: #b00020; }
+    </style>
+  </head>
+  <body>
+    <h1>ROK Lab frontend</h1>
+    <p>Calling the backend at <code>/api/hello</code> (routed via Traefik ingress):</p>
+    <pre id="out">loading…</pre>
+    <script>
+      fetch("/api/hello")
+        .then((r) => r.json())
+        .then((j) => {
+          document.getElementById("out").textContent = JSON.stringify(j, null, 2);
+          document.getElementById("out").classList.add("ok");
+        })
+        .catch((e) => {
+          const el = document.getElementById("out");
+          el.textContent = "backend unreachable: " + e;
+          el.classList.add("err");
+        });
+    </script>
+  </body>
+</html>

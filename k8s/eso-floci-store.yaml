@@ -10,27 +10,9 @@ type: Opaque
 stringData:
   access-key-id: "test"
   secret-access-key: "test"
----
-# ===>
-# reads secrets from  "development-rok-general-secret"
-# and writes them into the Kubernetes Secret "rok-general-secret" in default.
-# ===>
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
-metadata:
-  name: rok-general-secret
-  namespace: default
-spec:
-  refreshInterval: 1m
-  secretStoreRef:
-    kind: ClusterSecretStore
-    name: floci-secrets-manager
-  target:
-    name: rok-general-secret
-    creationPolicy: Owner
-  dataFrom:
-    - extract:
-        key: development-rok-general-secret
+# NOTE: the app-specific ExternalSecret (rok-general-secret) moved into the
+# rok-app Helm chart (charts/rok-app) so ArgoCD owns it. This file now holds only
+# the cluster-scoped ESO bootstrap: the AWS creds Secret + the ClusterSecretStore.
 ---
 # ===>
 # pulls creds from the secret object and uses them to read secret manager

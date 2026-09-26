@@ -1,5 +1,3 @@
-output "ecr_frontend_url" { value = module.ecr_frontend.repository_url }
-output "ecr_backend_url" { value = module.ecr_backend.repository_url }
 output "general_secret_arn" { value = module.development_secret.secret_arn }
 output "email_queue_url" { value = module.email.queue_url }
 output "email_dlq_url" { value = module.email_dlq.queue_url }

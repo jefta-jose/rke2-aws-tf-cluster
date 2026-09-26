@@ -405,3 +405,86 @@ bash /home/jeffndegwa/rke2-aws-tf-cluster/scripts/nuke-lab.sh
 virsh -c qemu:///system autostart rok-server
 virsh -c qemu:///system autostart rok-agent-1
 ```
+
+---
+
+## Phase 7 gotcha — Floci ECR does NOT work with the Docker Desktop engine (abandoned)
+
+Floci serves ECR at `<acct>.dkr.ecr.<region>.localhost:4566` and routes by the **Host header**, relying
+on the RFC 6761 rule that `*.localhost` resolves to `127.0.0.1` (loopback → Docker auto-insecure/HTTP).
+That works on native Linux docker, but **Docker Desktop's engine resolves registry hostnames via the
+Windows host, not any WSL `/etc/hosts`** — so `docker login/push` to the FQDN fails with
+`dial tcp: lookup ... : no such host`, and `localhost:4566/v2/` 404s (no path routing).
+
+Things that did NOT fix it: Ubuntu `/etc/hosts`, the `docker-desktop` distro's `/etc/hosts`. The only
+thing that would is the **Windows** hosts file (`C:\Windows\System32\drivers\etc\hosts`) — not worth it.
+
+**Decision:** drop ECR from Terraform; deliver the frontend/backend images to the RKE2 nodes without
+Floci ECR. App images built in `apps/frontend` + `apps/backend` (kept).
+
+### 7.2 — Local `registry:2` on the host (replaces ECR)
+
+A plain registry container on the host at `:5000`. **Push from the host via `localhost:5000`**
+(loopback → Docker Desktop auto-trusts it as HTTP, no daemon config), **nodes pull via the virbr0
+gateway `192.168.122.1:5000`** — same container, same stored repos, host part is just addressing.
+```bash
+docker run -d --restart unless-stopped --name lab-registry \
+  -p 5000:5000 -v lab-registry-data:/var/lib/registry registry:2
+docker tag <frontend-image-id> localhost:5000/rok-frontend:v1
+docker tag <backend-image-id>  localhost:5000/rok-backend:v1
+docker push localhost:5000/rok-frontend:v1
+docker push localhost:5000/rok-backend:v1
+```
+Result: `curl -s http://localhost:5000/v2/_catalog` → `{"repositories":["rok-backend","rok-frontend"]}`,
+and the **same catalog is reachable from inside a node**:
+`ssh ubuntu@192.168.122.138 "curl -s http://192.168.122.1:5000/v2/_catalog"` → same JSON. Confirms the
+gateway-IP publish works exactly like Floci's `:4566`. Image refs everywhere else use
+`192.168.122.1:5000/rok-{frontend,backend}:v1`.
+
+### 7.3 — Point RKE2 nodes at the registry
+
+`vms/registries.yaml` (an `http://` endpoint = plain HTTP, no TLS flags needed) installed to
+`/etc/rancher/rke2/registries.yaml` on **every** node, then RKE2 restarted (containerd reads it only at
+start). Server restart bounces the control plane ~30–60s; both nodes returned `Ready`.
+```bash
+for ip in $SERVER_IP $AGENT_IP; do
+  scp vms/registries.yaml ubuntu@$ip:/tmp/registries.yaml
+  ssh ubuntu@$ip "sudo mkdir -p /etc/rancher/rke2 && sudo mv /tmp/registries.yaml /etc/rancher/rke2/registries.yaml && sudo chown root:root $_"
+done
+ssh ubuntu@$SERVER_IP "sudo systemctl restart rke2-server"
+ssh ubuntu@$AGENT_IP  "sudo systemctl restart rke2-agent"
+kubectl get nodes   # both back to Ready
+```
+That's all that's required — `registries.yaml` is what lets containerd reach the registry; the kubelet
+(driven by ArgoCD in Phase 8) does the actual image pulls at deploy time, so **no manual pull needed**.
+(One-off sanity check if ever debugging an `ImagePullBackOff`:
+`ssh ubuntu@$ip "sudo /var/lib/rancher/rke2/bin/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock pull 192.168.122.1:5000/rok-frontend:v1"`.)
+
+> **Phase 7 checkpoint met:** local registry replaces ECR; both RKE2 nodes pull
+> `192.168.122.1:5000/rok-{frontend,backend}:v1`. Next: Phase 8 (ArgoCD deploys the Helm charts;
+> Deployments reference those image refs; ESO injects `SECRET_MESSAGE`; reach it via ALB → Traefik).
+
+---
+
+## Phase 8 — GitOps: ArgoCD deploys frontend + backend
+
+### 8.1 / 8.2 — the `rok-app` Helm chart (`charts/rok-app`)
+
+One small chart mirroring ROK's split: **compute** (`therok_deployment`) = frontend + backend
+Deployments + **ClusterIP** Services; **infra** (`therok_v2`) = `ExternalSecret` + Traefik `Ingress`.
+Notes:
+- App Services are **ClusterIP**, not NodePort — the only NodePort in the path is Traefik's `30080`
+  (Phase 6). Path: `ALB :80 → Traefik NodePort 30080 → Ingress → ClusterIP svc`.
+- `imagePullSecrets` kept as an (empty) value to mirror ROK's `aws-registry`, but our registry is open.
+- Backend gets `SECRET_MESSAGE` from k8s Secret `rok-general-secret` via `secretKeyRef`.
+- Added `SECRET_MESSAGE` to the Floci secret in `terraform/main.tf` (`development_secret`) + `terraform
+  apply`. Verify: `aws --endpoint-url=http://localhost:4566 secretsmanager get-secret-value
+  --secret-id development-rok-general-secret --query SecretString --output text` shows all 4 keys.
+- **ESO ownership split** to avoid a duplicate `ExternalSecret`: `k8s/eso-floci-store.yaml` now holds
+  only the bootstrap (creds Secret + `ClusterSecretStore`); the app `ExternalSecret` lives in the chart.
+```bash
+helm lint charts/rok-app
+helm template rok-app charts/rok-app   # renders: 2 Deploys, 2 Svcs, Ingress, ExternalSecret
+```
+Result: lint clean, render shows correct image refs, backend `env: SECRET_MESSAGE`, Ingress
+(`/api`→backend, `/`→frontend, host `rok.local`), and the `ExternalSecret`.

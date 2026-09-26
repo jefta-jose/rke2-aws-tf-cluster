@@ -1,0 +1,31 @@
+{{- if .Values.ingress.enabled }}
+# Traefik Ingress (mirrors therok_v2). ALB :80 -> Traefik NodePort 30080 ->
+# these rules: /api -> backend, everything else -> frontend. /api is listed
+# first so it wins over the catch-all /.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rok-app
+  labels:
+    app: rok-app
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.backend.name }}
+                port:
+                  number: {{ .Values.backend.port }}
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.frontend.name }}
+                port:
+                  number: {{ .Values.frontend.port }}
+{{- end }}

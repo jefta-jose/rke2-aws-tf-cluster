@@ -1,0 +1,8 @@
+# RKE2 registry config — pull lab images from the host's local registry:2.
+# Reachable from every node at the virbr0 gateway over plain HTTP.
+# Install to /etc/rancher/rke2/registries.yaml on EACH node, then restart
+# rke2-server (server) / rke2-agent (agents) for containerd to pick it up.
+mirrors:
+  "192.168.122.1:5000":
+    endpoint:
+      - "http://192.168.122.1:5000"
