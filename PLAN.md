@@ -165,25 +165,6 @@ no SES, no AWS in the path. The frontend sends a message straight through to mai
   from the browser and watch the message land in the mailpit UI.
 → Learn: the ROK in-cluster mailpit test-sink pattern, a frontend→service→mailpit hop, and service
   config pulled from Secrets Manager via ESO — all cloud-email-free.
-
-### Phase 10 — SNS→SQS event pipeline + Postgres (producer/consumer)
-A real fan-out: a **producer** publishes events to **SNS**, SNS delivers to an **SQS** queue, and a
-**consumer** processes them and writes to **Postgres**. Postgres runs as its own docker-compose (like
-the registry), NOT RDS/Floci; every backend service reads its creds from Floci Secrets Manager via ESO.
-- 10.1 Stand up **Postgres** via a `postgres/docker-compose.yml` on the host (published on
-  `192.168.122.1:5432` — the same host-gateway route pods already use for the registry/Floci). Create
-  the app DB + an `events` table.
-- 10.2 Terraform: put the Postgres creds in Floci Secrets Manager (`development-rok-db-secret`) and
-  create the **SNS topic** + an **SQS queue subscribed to it** (SNS→SQS fan-out).
-- 10.3 **Producer:** a frontend action (button/form) → `POST` to a publisher endpoint that publishes
-  an event to SNS (through Floci at `http://192.168.122.1:4566`).
-- 10.4 **Consumer** workload: long-polls the SNS-subscribed SQS queue, and for each event writes a row
-  to Postgres (DB creds from ESO). Uses the map-driven chart's worker shape (no inbound networking).
-- 10.5 End-to-end: click in the frontend → SNS → SQS → consumer → row lands in Postgres. Verify with a
-  `SELECT`; exercise the DLQ with a poison event.
-→ Learn: SNS→SQS fan-out, a genuine producer/consumer split, pod↔Floci runtime API calls, and a
-  cloud-agnostic Postgres whose creds live in Secrets Manager.
-
 ---
 
 ## Verification checkpoints
@@ -192,7 +173,6 @@ the registry), NOT RDS/Floci; every backend service reads its creds from Floci S
 - Phase 8: browser/curl through the Floci ALB returns the frontend, which reaches the backend; a
   secret value visible in a pod originated from Floci Secrets Manager.
 - Phase 9: a message sent from the frontend form appears in the in-cluster mailpit UI (no AWS).
-- Phase 10: a frontend action publishes to SNS → the SQS consumer writes a row visible in Postgres.
 
 ## Cleanup notes (for later)
 - `docker compose down -v` in `~/floci-docker` removes Floci + volumes; the `registry:2` and the

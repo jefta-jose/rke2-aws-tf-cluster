@@ -723,3 +723,29 @@ and the message appears in the mailpit UI (`localhost:30080/mailpit`). Path:
 
 > **9.2 done.** A frontend-reachable service sends mail into the in-cluster sink, configured from
 > Secrets Manager via ESO. Next (9.3): a send-email form on the frontend page.
+
+---
+
+## Phase 9.3 — send-email form on the frontend
+
+`apps/frontend/index.html` gains a small form (to / subject / body + Send) that `fetch`es
+`POST /api/email` and shows the JSON result, plus a link to `/mailpit`. Same-origin, so the request
+rides the existing Traefik ingress. Rebuilt as an immutable **`:v2`** tag (v1 stays deployed until the
+tag bump), and `values-development.yaml` frontend tag `v1 → v2` — ArgoCD's selfHeal rolls it on the
+git push (no manual sync needed; the UI showed it Synced).
+
+```bash
+docker build -t rok-frontend:v2 apps/frontend
+docker tag rok-frontend:v2 localhost:5000/rok-frontend:v2
+docker push localhost:5000/rok-frontend:v2
+git add apps/frontend charts/rok-app/values-development.yaml && git commit -m "Phase 9.3: send-email form on the frontend" && git push
+kubectl -n rok-development rollout status deploy/rok-frontend --timeout=180s
+```
+Result: ArgoCD synced `rok-frontend-development` to `:v2`; opening `http://localhost:30080/` shows the
+form, submitting it returns `{"status":"sent",...}`, and the message lands in the mailpit UI
+(`localhost:30080/mailpit`). Full human path: **browser form → /api/email → rok-mailer → SMTP →
+mailpit**, with the mailer's SMTP target sourced from Secrets Manager via ESO.
+
+> **Phase 9 done.** In-cluster mailpit test sink (ROK values-file route) + a mailer wired to the
+> frontend; you can send an email from the browser and watch it arrive — no AWS/SES in the path.
+> Next: Phase 10 (SNS→SQS event pipeline + Postgres, producer/consumer).
