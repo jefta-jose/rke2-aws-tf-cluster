@@ -1,7 +1,7 @@
 # NUKE.md — full teardown runbook (ROK Infra Learning Lab)
 
 
-## 2. Terraform / Floci — destroy the AWS base
+## 1. Terraform +  Floci + Docker — destroy the AWS base
 
 Destroys everything Terraform provisioned into Floci: `development-rok-general-secret`,
 SQS `email` + `email-dlq`, IAM node role/policies, the ALB + NodePort 30080 target group, and the WAFv2
@@ -15,38 +15,14 @@ backing store). Do this only when you don't care about a clean per-resource dest
 ```bash
 docker compose -f /home/jeffndegwa/floci-docker/docker-compose.yaml down
 sudo rm -rf /home/jeffndegwa/floci-docker/data
+docker rm -f floci-ecr-registry
+docker rm -f lab-registry
+docker volume rm lab-registry-data
 docker volume rm floci-ecr-registry-data
 ```
 ---
 
-## 3. Docker (host) — Floci stack + local registry
-
-Only after step 2. Brings down the Floci compose stack (`floci` + `floci-ui`), removes the separate ECR
-backing container, and removes the `registry:2` image registry plus its data volume.
-
-```bash
-docker compose -f /home/jeffndegwa/floci-docker/docker-compose.yaml down
-docker rm -f floci-ecr-registry
-docker rm -f lab-registry
-docker volume rm lab-registry-data
-```
-
-- `docker compose ... down` stops+removes `floci-docker-floci-1` and `floci-docker-floci-ui-1` (started
-  per `/home/jeffndegwa/floci-docker/docker-compose.yaml`).
-- `floci-ecr-registry` is a standalone container (the hybrid-mode ECR backing store), not in the compose
-  file — remove it directly.
-  drop it in step 2.
-- `lab-registry` is the `registry:2` container started in Phase 7.2
-  (`docker run ... -v lab-registry-data:/var/lib/registry registry:2`); removing `lab-registry-data`
-  discards the pushed images (`rok-frontend`, `rok-backend`, `rok-mailer`). You'll re-push them from
-  `apps/*` on rebuild (Phase 7.2 / 9.2 / 9.3).
-
-> Leave the unrelated observability containers (grafana, prometheus, cadvisor, node-exporter) alone —
-> they're not part of this lab's teardown.
-
----
-
-## 4. VMs — destroy rok-server + rok-agent-1
+## 2. VMs — destroy rok-server + rok-agent-1
 
 Destroys (force-stops) then undefines both RKE2 nodes.
 
