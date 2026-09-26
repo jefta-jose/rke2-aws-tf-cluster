@@ -488,3 +488,26 @@ helm template rok-app charts/rok-app   # renders: 2 Deploys, 2 Svcs, Ingress, Ex
 ```
 Result: lint clean, render shows correct image refs, backend `env: SECRET_MESSAGE`, Ingress
 (`/api`→backend, `/`→frontend, host `rok.local`), and the `ExternalSecret`.
+
+### 8.3 — ArgoCD Application syncs the chart (GitOps)
+
+`k8s/rok-app-application.yaml` (Application in `argocd` ns → repo `main`, path `charts/rok-app`, dest
+`default`, automated+prune+selfHeal). ArgoCD is pull-based, so the chart must be pushed first. Also
+deleted the stale manual `ExternalSecret` so the chart owns it.
+```bash
+git add charts/ apps/ vms/registries.yaml k8s/eso-floci-store.yaml k8s/rok-app-application.yaml terraform/main.tf commands.md
+git commit -m "..." && git push origin main
+kubectl delete externalsecret rok-general-secret -n default --ignore-not-found
+kubectl apply -f k8s/rok-app-application.yaml
+```
+Result: app `Synced`; both pods `1/1 Running`; **images pulled from `192.168.122.1:5000` by the kubelet
+(Phase 7 proven via GitOps, no manual pull)**; ESO `SecretSynced/Ready=True`, secret `rok-general-secret`
+has all 4 keys. End-to-end **through Traefik** (NodePort 30080, `Host: rok.local`):
+```bash
+curl -s -H "Host: rok.local" http://192.168.122.138:30080/api/hello
+# {"message":"hello from the ROK-lab backend","secret":"injected from Floci Secrets Manager via ESO",...}
+curl -s -H "Host: rok.local" http://192.168.122.138:30080/           # frontend HTML
+```
+**Gotcha:** ArgoCD health stays `Progressing` forever because Traefik doesn't populate
+`Ingress.status.loadBalancer` (`LB={}`) and ArgoCD waits on it. Purely cosmetic — traffic works. Fix if
+desired: set Traefik `providers.kubernetesIngress.ingressEndpoint` so it writes ingress status.

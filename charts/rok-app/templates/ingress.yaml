@@ -2,6 +2,13 @@
 # Traefik Ingress (mirrors therok_v2). ALB :80 -> Traefik NodePort 30080 ->
 # these rules: /api -> backend, everything else -> frontend. /api is listed
 # first so it wins over the catch-all /.
+#
+# NOTE: routing is path-based with NO host constraint. Real AWS ALB preserves the
+# client Host header, so ROK can key its Ingress on a hostname. Floci's LB emulation
+# REWRITES Host to the LB's own DNS name before forwarding, which would never match a
+# host-scoped rule -> Traefik 404. Dropping `host:` lets Traefik match by path for any
+# host, so the app is reachable through the Floci ALB. (values.ingress.host kept for
+# reference but no longer used for routing.)
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -11,8 +18,7 @@ metadata:
 spec:
   ingressClassName: traefik
   rules:
-    - host: {{ .Values.ingress.host | quote }}
-      http:
+    - http:
         paths:
           - path: /api
             pathType: Prefix
