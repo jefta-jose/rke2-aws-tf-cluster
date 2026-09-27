@@ -81,13 +81,13 @@ resource "aws_iam_role" "rke2_node" {
 # SES send (mirrors "lowerenv-rock-email-ses-send").
 resource "aws_iam_policy" "email_ses_send" {
   name        = "lowerenv-rock-email-ses-send"
-  description = "Allows sending emails via SES for the therok-email worker"
+  description = "Allows sending emails via SES for the therock-email worker"
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
       Action   = ["ses:SendEmail", "ses:SendRawEmail"]
-      Resource = "arn:aws:ses:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:identity/amarok.com"
+      Resource = "arn:aws:ses:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:identity/amarock.com"
     }]
   })
 }

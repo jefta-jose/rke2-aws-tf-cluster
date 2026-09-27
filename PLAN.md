@@ -1,7 +1,7 @@
 # Recreate the ROCK Infra as a Learning Lab (Floci + real RKE2 VMs)
 
 ## Context & goal
-The real "TheRok" platform (studied in `/home/jeffndegwa/TheRokInfrastructure`) is a hub-and-spoke
+The real "TheRock" platform (studied in `/home/jeffndegwa/TheRockInfrastructure`) is a hub-and-spoke
 **RKE2 + Rancher + ArgoCD** Kubernetes platform on AWS, with an ALB → Traefik(NodePort) ingress
 path, RDS SQL Server, Secrets Manager → External Secrets Operator, SQS/SES email workers, ECR image
 registry, WAF, and a frontend + .NET APIs deployed via GitOps.
@@ -145,8 +145,8 @@ Following ROCK's `setup-env.md` order:
 → Learn: ECR as the registry ArgoCD/RKE2 pulls from, the exact image URIs.
 
 ### Phase 8 — GitOps: ArgoCD deploys frontend + backend
-- 8.1 Write Helm charts mirroring `therok_v2` (infra: ExternalSecret + Ingress) and
-  `therok_deployment` (Deployments + NodePort Services).
+- 8.1 Write Helm charts mirroring `therock_v2` (infra: ExternalSecret + Ingress) and
+  `therock_deployment` (Deployments + NodePort Services).
 - 8.2 ArgoCD `Application`(s) pointed at the chart(s); sync; pods come up pulling from Floci ECR;
   secrets arrive via ESO from Floci Secrets Manager.
 - 8.3 Hit the app end-to-end **through the Floci ALB** → Traefik → frontend/backend.
