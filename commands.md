@@ -463,72 +463,6 @@ JSON with the injected `SECRET_MESSAGE`.
 `Ingress.status.loadBalancer` (`LB={}`) and ArgoCD waits on it. Purely cosmetic — traffic works. Fix if
 desired: set Traefik `providers.kubernetesIngress.ingressEndpoint` so it writes ingress status.
 
-### 8.4 — the last hop: the socat bridge (host → Traefik NodePort)
-
-The inbound front door is a **socat bridge**, not Floci's ALB. Two Floci/Docker-Desktop topology facts
-are why the ALB can't serve this path (neither exists against real AWS):
-
-1. **Floci can't route into libvirt.** Floci runs in Docker Desktop's own VM; it has no route to the
-   RKE2 VMs' `192.168.122.0/24`, so an ALB target of `192.168.122.138:30080` just times out.
-2. **Floci's LB rewrites the Host header** to the LB's own DNS name before forwarding, so a host-scoped
-   Ingress rule never matches → Traefik 404. (Hence the host-less, path-based Ingress in 8.1.)
-
-The WSL2 host, unlike Floci, *can* route into virbr0 — so bridge the host's `localhost:30080` straight
-to the node's NodePort. **This is the same one bridge for the whole lab** — Traefik routes by path, so
-once it's up, `/` (app), `/api`, `/mailpit`, and `/argocd` are all reachable through it; there's nothing
-per-resource to hook up. `scripts/socat-bridge.sh` derives rok-server's current IP (DHCP), kills any
-existing bridge, and starts a fresh one under `nohup` (survives the terminal). Re-run on each cluster
-rebuild (it's safe to re-run anytime — it just re-points at the current IP):
-```bash
-bash /home/jeffndegwa/rke2-aws-tf-cluster/scripts/socat-bridge.sh
-```
-Under the hood it's a single `socat TCP-LISTEN:30080,fork,reuseaddr TCP:$SERVER_IP:30080`; stop it with
-`pkill -f 'socat.*30080'`.
-
-> **Phase 8 checkpoint met:** GitOps (ArgoCD) deploys the chart from git; images pull from the local
-> registry; ESO injects the secret; and the app is reachable through **socat → Traefik → pod**. The
-> `socat` bridge + host-less Ingress are Floci-topology accommodations, not part of the real AWS design
-> (real ALB routes into the VPC and preserves the Host header).
-
-### 8.5 — Access the app locally + the full request trace
-
-The `socat` bridge (§8.4) also doubles as the **local browser entry point**: it listens on the WSL2
-host's `localhost:30080`, so — with the host-less Ingress — a plain request routes straight through.
-```bash
-curl -s http://localhost:30080/          | head -c 120   # frontend HTML (no Host header needed)
-curl -s http://localhost:30080/api/hello                 # backend JSON with the ESO secret
-# then open in the browser (Windows browser works too, via WSL2 mirrored localhost):
-#   http://localhost:30080/
-```
-**What actually happens on `GET http://localhost:30080/`:**
-```
-Browser/curl (Windows or WSL2)  GET http://localhost:30080/
-  │  localhost = WSL2 host (Windows reaches it via WSL2 mirrored networking)
-  ▼
-[1] socat @ WSL2 host 0.0.0.0:30080  ──splice TCP──▶ 192.168.122.138:30080
-  │  host routes via its virbr0 gateway NIC (192.168.122.1) into the libvirt subnet.
-  │  (bridge exists only because Floci can't reach libvirt — NOT part of real ROK)
-  ▼
-[2] rok-server VM :30080  = Traefik NodePort  (kube-proxy listens on :30080 every node)
-  ▼
-[3] Traefik pod — Ingress is HOST-LESS / path-based:  /api→rok-backend:8080, /→rok-frontend:80
-  │  path "/" → rok-frontend
-  ▼
-[4] Service rok-frontend (ClusterIP :80) ──kube-proxy──▶ [5] rok-frontend pod (nginx) → index.html
-  ▲
-  │  page JS runs fetch("/api/hello") — same origin, repeats [1]→[3] with path "/api"
-  ▼
-[3'] Traefik "/api" → rok-backend:8080 → [6] rok-backend pod (node) → JSON
-  │  SECRET_MESSAGE env ← k8s Secret rok-backend-secret ← ESO ← Floci Secrets Manager
-  ▼
-  {"message":"…","host":"rok-backend-…","secret":"injected from Floci Secrets Manager via ESO", …}
-```
-**This path doesn't use the ALB at all** — `host → socat → Traefik NodePort` is the whole route (the
-Floci ALB is provisioned only for parity, not used; see §8.4). Real ROK equivalent:
-`client → DNS → real ALB (in the VPC) → Traefik NodePort → same Ingress → Service → pod` (no socat; the
-ALB reaches the nodes natively because it lives in the same network).
-
-> **Phase 8 done.** Local browser access works; the full ROK request path is understood hop-by-hop.
 ---
 
 ## Phase 9.1 — in-cluster mailpit (test mail sink), the ROK way
@@ -596,50 +530,11 @@ Chart wiring:
 (mailpit now lives in the `mailhog` namespace as service `mailpit-smtp`; cross-namespace DNS).
 
 ```bash
-docker build -t rok-mailer:v1 apps/mailer
-docker tag rok-mailer:v1 localhost:5000/rok-mailer:v1
-docker push localhost:5000/rok-mailer:v1
-terraform -chdir=terraform apply            # pushes the new Smtp__Host into Floci Secrets Manager
-git add charts/rok-app k8s/argocd apps/mailer terraform/main.tf && git commit -m "Phase 9.2: mailer workload -> mailpit SMTP sink" && git push
-kubectl apply -f k8s/argocd/applications/rok-mailer-development.yaml
+cd /home/jeffndegwa/rke2-aws-tf-cluster/apps/mailer
+docker build -t rok-mailer:v001 .
+
+docker tag rok-mailer:v001 localhost:5000/rok-mailer:v001
+docker push localhost:5000/rok-mailer:v001
+
+kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/argocd/applications/rok-mailer-development.yaml
 ```
-Verify + smoke test:
-```bash
-kubectl -n rok-development get externalsecret,deploy,pods,ingress | grep -i mailer
-kubectl -n rok-development get secret rok-mailer-secret -o jsonpath='{.data.Smtp__Host}' | base64 -d; echo
-curl -s -X POST http://localhost:30080/api/email -H 'Content-Type: application/json' \
-  -d '{"to":"someone@rok.local","subject":"Hello from the lab","body":"First test."}'; echo
-```
-Result: `rok-mailer-secret` **SecretSynced True**; `rok-mailer` pod **Running**; decoded `Smtp__Host`
-= `mailpit-smtp.mailhog`; the curl returns `{"status":"sent",...,"sink":"mailpit-smtp.mailhog:1025"}`
-and the message appears in the mailpit UI (`localhost:30080/mailpit`). Path:
-`browser/curl → socat :30080 → Traefik (/api/email) → rok-mailer → SMTP mailpit-smtp.mailhog:1025`.
-
-> **9.2 done.** A frontend-reachable service sends mail into the in-cluster sink, configured from
-> Secrets Manager via ESO. Next (9.3): a send-email form on the frontend page.
-
----
-
-## Phase 9.3 — send-email form on the frontend
-
-`apps/frontend/index.html` gains a small form (to / subject / body + Send) that `fetch`es
-`POST /api/email` and shows the JSON result, plus a link to `/mailpit`. Same-origin, so the request
-rides the existing Traefik ingress. Rebuilt as an immutable **`:v2`** tag (v1 stays deployed until the
-tag bump), and `values-development.yaml` frontend tag `v1 → v2` — ArgoCD's selfHeal rolls it on the
-git push (no manual sync needed; the UI showed it Synced).
-
-```bash
-docker build -t rok-frontend:v2 apps/frontend
-docker tag rok-frontend:v2 localhost:5000/rok-frontend:v2
-docker push localhost:5000/rok-frontend:v2
-git add apps/frontend charts/rok-app/values-development.yaml && git commit -m "Phase 9.3: send-email form on the frontend" && git push
-kubectl -n rok-development rollout status deploy/rok-frontend --timeout=180s
-```
-Result: ArgoCD synced `rok-frontend-development` to `:v2`; opening `http://localhost:30080/` shows the
-form, submitting it returns `{"status":"sent",...}`, and the message lands in the mailpit UI
-(`localhost:30080/mailpit`). Full human path: **browser form → /api/email → rok-mailer → SMTP →
-mailpit**, with the mailer's SMTP target sourced from Secrets Manager via ESO.
-
-> **Phase 9 done.** In-cluster mailpit test sink (ROK values-file route) + a mailer wired to the
-> frontend; you can send an email from the browser and watch it arrive — no AWS/SES in the path.
-> Next: Phase 10 (SNS→SQS event pipeline + Postgres, producer/consumer).
