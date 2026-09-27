@@ -72,6 +72,10 @@ ssh ubuntu@"$SERVER_IP" 'sudo bash -s' < /home/jeffndegwa/rke2-aws-tf-cluster/sc
 ```
 Install RKE2 (server is the default flavour — no `INSTALL_RKE2_TYPE`). PIN the version so server/agent match and the `stable` channel can't 404 on us:
 ```bash
+ssh ubuntu@"$SERVER_IP"
+```
+
+```bash
 curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_VERSION="v1.36.4+rke2r1" sh -
 ```
 Result: installed v1.36.4+rke2r1.
@@ -109,6 +113,10 @@ argument (no multi-line paste; the agent's own `NODE_IP` is auto-detected inside
 ssh ubuntu@"$AGENT_IP" "sudo bash -s $SERVER_IP" < /home/jeffndegwa/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh
 ```
 `server` uses the **9345 supervisor port** (join endpoint), token must match the server, node-ip pins this worker's identity. Install in agent mode, PINNING the version to match the server (the `stable` channel briefly 404'd — pinning also enforces server/agent version parity):
+```bash
+ssh ubuntu@"$AGENT_IP"
+```
+
 ```bash
 curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE="agent" INSTALL_RKE2_VERSION="v1.36.4+rke2r1" sh -
 ```
@@ -236,15 +244,6 @@ and reading its `values.yaml`. Fixed manifest uses `service.spec.type: NodePort`
 Result: `type=NodePort`, `web=30080` (websecure got an ephemeral 32287). Traefik answers on
 `$SERVER_IP:30080` with `404` (up, no route yet).
 
-### 6.1b — Floci recovery (it died on WSL2 shutdown)
-
-Floci is a docker-compose stack; a WSL2 shutdown left all three containers `Exited (255)` and nothing on
-`:4566`. All Floci state (Secrets Manager, SQS, the full Terraform state) survives the restart.
-Start the registry-backing container FIRST (hybrid-mode gotcha), then Floci:
-```bash
-docker start floci-ecr-registry floci-docker-floci-1 floci-docker-floci-ui-1
-curl -sS -o /dev/null -w 'floci http=%{http_code}\n' http://localhost:4566/ && aws --endpoint-url=http://localhost:4566 --region us-east-1 sts get-caller-identity
-```
 
 ---
 
@@ -282,7 +281,11 @@ in the app namespace). Apply + confirm the store validates (proves ESO reaches F
 via the injected endpoint):
 ```bash
 kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/external-secrets/floci-store.yaml
-kubectl get clustersecretstore floci-secrets-manager   # -> Valid / READY True
+```
+
+```bash
+#give it some few seconds
+kubectl get clustersecretstore # -> Valid / READY True
 ```
 Result: store `Valid`/`READY True` — ESO authenticated to Floci and can read Secrets Manager. (Tip for
 inspecting a synced Secret's keys later: `kubectl get secret <name> -o go-template='{{range $k,$v :=
@@ -303,35 +306,31 @@ reached through the same socat bridge as the app). The chart's own Ingress is **
 ```bash
 export KUBECONFIG="$HOME/.kube/rok-lab.yaml"
 kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/argocd/install/helmchart.yaml
+```
+
+```bash
 kubectl -n kube-system get job helm-install-argo-cd -w
+```
+
+```bash
 kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/argocd/install/ingress.yaml
+```
+
+```bash
 kubectl -n argocd get pods
+```
+
+```bash
 kubectl -n argocd get ingress
 ```
-7 pods `Running` (server, repo-server, application-controller statefulset, redis, dex, applicationset,
-notifications); Ingress `argocd-server` class `traefik`, host-less on `/argocd`. Prove Traefik routes to
-it by **path** (no Host header, no hosts file). socat may not be up yet at this phase, so hit the node
-directly from WSL2 — expect `200` (follow the `/argocd`→`/argocd/` redirect with `-L`):
-```bash
-curl -sSL -o /dev/null -w 'http=%{http_code}\n' http://$SERVER_IP:30080/argocd
-```
 
-### 6.3a — access + CLI login
 
-No `/etc/hosts` step anymore (host-less `/argocd`). Pull the initial admin password, install the CLI,
-log in. Because ArgoCD serves under `/argocd`, the CLI needs `--grpc-web-root-path /argocd` to find the
-API behind the sub-path; go straight to the node from WSL2 (`$SERVER_IP:30080`, no socat needed here):
+### 6.3a — get password for login
+
+
 ```bash
 PW=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo)
-curl -L -# -o /tmp/argocd https://github.com/argoproj/argo-cd/releases/download/v3.5.3/argocd-linux-amd64
-sudo install -m 555 /tmp/argocd /usr/local/bin/argocd && argocd version --client
-argocd login $SERVER_IP:30080 --username admin --password $PW --plaintext --grpc-web --grpc-web-root-path /argocd
 ```
-Result: `'admin:login' logged in successfully`. The **web UI is the same server** as the CLI (not a
-CLI-only install). **Gotcha:** a silent `curl -sSL` of the ~155 MB CLI produced a *corrupt* binary that
-**segfaulted** on `argocd version` — re-download with a progress bar (`-L -#`) and verify
-`argocd version --client` before trusting it. Pin the CLI to the server version (`v3.5.3`) to avoid
-client/server skew.
 
 ### 6.3b — open the ArgoCD web UI (no port-forward)
 
@@ -343,29 +342,7 @@ port-forward, no hosts file**. Two entry points depending on where the browser r
 ```bash
 bash /home/jeffndegwa/rke2-aws-tf-cluster/scripts/socat-bridge.sh
 ```
-Then browse `http://localhost:30080/argocd` (admin + the initial password). This replaces the old
-`kubectl port-forward` entirely — the UI now goes through the real Traefik route like the app does. The
-same bridge serves the app and mailpit too (Traefik routes by path), so you start it once and leave it up.
-
-> **Sub-path gotcha:** if the login page loads blank or assets 404, it's a `rootpath`/`basehref`
-> mismatch, not socat/Traefik — confirm `server.rootpath: /argocd` took effect
-> (`kubectl -n argocd get cm argocd-cmd-params-cm -o jsonpath='{.data.server\.rootpath}'`). If the CM
-> has it but the UI still misbehaves, the running server didn't reload the flag — bounce it:
-> `kubectl -n argocd rollout restart deploy/argo-cd-argocd-server`. Traefik must forward the `/argocd`
-> prefix un-stripped (a plain Ingress does; don't add a strip-prefix middleware).
-
-> **Phase 6 checkpoint met** (PLAN.md): Traefik, ESO, and ArgoCD all `Running`; ArgoCD reachable + CLI
-> login works. Next: Phase 7 (image flow) → Phase 8 (ArgoCD deploys frontend/backend; the app Ingress
-> serves `/` with `200`, reachable through the socat bridge → Traefik NodePort).
-
----
-
-# Autostart the VMs on WSL2 launch
-
-```bash
-virsh -c qemu:///system autostart rok-server
-virsh -c qemu:///system autostart rok-agent-1
-```
+Then browse `http://localhost:30080/argocd` (admin + the initial password). 
 
 ---
 
@@ -391,16 +368,35 @@ gateway `192.168.122.1:5000`** — same container, same stored repos, host part 
 ```bash
 docker run -d --restart unless-stopped --name lab-registry \
   -p 5000:5000 -v lab-registry-data:/var/lib/registry registry:2
-docker tag <frontend-image-id> localhost:5000/rok-frontend:v1
-docker tag <backend-image-id>  localhost:5000/rok-backend:v1
-docker push localhost:5000/rok-frontend:v1
-docker push localhost:5000/rok-backend:v1
 ```
-Result: `curl -s http://localhost:5000/v2/_catalog` → `{"repositories":["rok-backend","rok-frontend"]}`,
-and the **same catalog is reachable from inside a node**:
-`ssh ubuntu@192.168.122.138 "curl -s http://192.168.122.1:5000/v2/_catalog"` → same JSON. Confirms the
-gateway-IP publish works exactly like Floci's `:4566`. Image refs everywhere else use
-`192.168.122.1:5000/rok-{frontend,backend}:v1`.
+
+```bash
+cd /home/jeffndegwa/rke2-aws-tf-cluster/apps/backend
+docker build -t rok-backend:v001 .
+docker tag rok-backend:v001  localhost:5000/rok-backend:v001
+```
+
+```bash
+cd /home/jeffndegwa/rke2-aws-tf-cluster/apps/frontend
+docker build -t rok-frontend:v001 .
+docker tag rok-frontend:v001  localhost:5000/rok-frontend:v001
+```
+
+```bash
+docker push localhost:5000/rok-frontend:v001
+docker push localhost:5000/rok-backend:v001
+```
+
+check images in the repo
+```bash
+curl -s http://localhost:5000/v2/_catalog
+```
+
+check repo can be reached from inside the VMs
+```bash
+SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+ssh ubuntu@"$SERVER_IP" curl -s http://192.168.122.1:5000/v2/_catalog
+```
 
 ### 7.3 — Point RKE2 nodes at the registry
 
@@ -408,93 +404,45 @@ gateway-IP publish works exactly like Floci's `:4566`. Image refs everywhere els
 `/etc/rancher/rke2/registries.yaml` on **every** node, then RKE2 restarted (containerd reads it only at
 start). Server restart bounces the control plane ~30–60s; both nodes returned `Ready`.
 ```bash
+SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+AGENT_IP=$(virsh -c qemu:///system domifaddr rok-agent-1 | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+echo "SERVER_IP=$SERVER_IP AGENT_IP=$AGENT_IP"
+```
+
+```bash
 for ip in $SERVER_IP $AGENT_IP; do
   scp vms/registries.yaml ubuntu@$ip:/tmp/registries.yaml
-  ssh ubuntu@$ip "sudo mkdir -p /etc/rancher/rke2 && sudo mv /tmp/registries.yaml /etc/rancher/rke2/registries.yaml && sudo chown root:root $_"
+  ssh ubuntu@$ip "sudo mkdir -p /etc/rancher/rke2 && sudo mv /tmp/registries.yaml /etc/rancher/rke2/registries.yaml && sudo chown root:root /etc/rancher/rke2/registries.yaml"
 done
-ssh ubuntu@$SERVER_IP "sudo systemctl restart rke2-server"
-ssh ubuntu@$AGENT_IP  "sudo systemctl restart rke2-agent"
-kubectl get nodes   # both back to Ready
 ```
-That's all that's required — `registries.yaml` is what lets containerd reach the registry; the kubelet
-(driven by ArgoCD in Phase 8) does the actual image pulls at deploy time, so **no manual pull needed**.
-(One-off sanity check if ever debugging an `ImagePullBackOff`:
-`ssh ubuntu@$ip "sudo /var/lib/rancher/rke2/bin/crictl --runtime-endpoint unix:///run/k3s/containerd/containerd.sock pull 192.168.122.1:5000/rok-frontend:v1"`.)
 
-> **Phase 7 checkpoint met:** local registry replaces ECR; both RKE2 nodes pull
-> `192.168.122.1:5000/rok-{frontend,backend}:v1`. Next: Phase 8 (ArgoCD deploys the Helm charts;
-> Deployments reference those image refs; ESO injects `SECRET_MESSAGE`; reach it via socat → Traefik).
+```bash
+ssh ubuntu@$SERVER_IP "sudo systemctl restart rke2-server"
+```
+
+```bash
+ssh ubuntu@$AGENT_IP  "sudo systemctl restart rke2-agent"
+```
+
+```bash
+kubectl get nodes
+```
 
 ---
 
 ## Phase 8 — GitOps: ArgoCD deploys the workloads (map-driven chart)
-
-### 8.1 — the `rok-app` chart (`charts/rok-app/`, map-driven)
-
-Refactored to mirror the real `becklar_messaging_workloads` chart: a single `workloads:` map that the
-templates `range` over, so adding a workload = a values entry (no new template files). Full walkthrough
-in `charts/rok-app/README.md`. Layout:
-```
-charts/rok-app/
-  Chart.yaml
-  values.yaml                # shape: workloads{frontend,backend,worker} + secretStoreAuth
-  values-development.yaml     # per-env overlay: image repos (local registry) + Secrets Manager remoteKeys
-  README.md                  # how it works + how to add a workload/environment
-  templates/
-    _helpers.tpl             # shared labels (rok-app.labels)
-    deployments.yaml         # Deployment per enabled workload                (sync-wave 0)
-    services.yaml            # ClusterIP Service per workload w/ service.enabled
-    ingress.yaml             # host-less Ingress PER workload w/ ingress.enabled
-    external-secrets.yaml    # ExternalSecret per workload that has a secretName (sync-wave -1)
-    secret-stores.yaml       # namespaced SecretStore per such workload         (sync-wave -2)
-```
-Key points:
-- **Workloads:** `frontend` (nginx — Service+Ingress `/`, no secret), `backend` (node API —
-  Service+Ingress `/api`, secret → `SECRET_MESSAGE`), `worker` (SQS consumer — no Service/Ingress,
-  ships `enabled: false` until Phase 9).
-- **Sync waves** order the ESO chain so dependencies exist first: SecretStore `-2` → ExternalSecret
-  `-1` → Deployment `0`.
-- **Per-workload `SecretStore`** (namespaced), not one ClusterSecretStore. Real ROK's store has NO auth
-  (IRSA). Floci has no IAM, so `secretStoreAuth.enabled: true` renders an `auth.secretRef` → a
-  `floci-aws-creds` Secret **in the release namespace** (bootstrapped in 8.3, never in git).
-- **Host-less Ingress**, one per workload (`rok-frontend` `/`, `rok-backend` `/api`) so the
-  one-app-per-workload model doesn't collide on a shared Ingress name; Traefik merges the path rules.
-  Host-less because requests arrive over the socat bridge with a `localhost` Host, not the app's
-  hostname, so path-based routing is what matches (8.4).
-- Backend's secret contents come from Floci `development-rok-general-secret` (`externalSecret.remoteKey`
-  in values-development.yaml), which carries `SECRET_MESSAGE`. That key was added to `terraform/main.tf`
-  (`development_secret`) + `terraform apply`; verify: `aws --endpoint-url=http://localhost:4566
-  secretsmanager get-secret-value --secret-id development-rok-general-secret --query SecretString
-  --output text`.
-```bash
-helm lint charts/rok-app -f charts/rok-app/values-development.yaml
-helm template rok-backend charts/rok-app -f charts/rok-app/values-development.yaml \
-  --set workloads.frontend.enabled=false --set workloads.worker.enabled=false
-```
-Result: lint clean. Backend render → Service + Deployment (`secretKeyRef SECRET_MESSAGE`, image
-`192.168.122.1:5000/rok-backend:v1`), Ingress `/api`, ExternalSecret (wave -1), SecretStore (wave -2)
-with the Floci `auth.secretRef` block. Frontend render → Service+Deployment+Ingress `/` and **zero**
-secret machinery.
-
-### 8.2 — ArgoCD Applications (one per workload, `k8s/argocd/applications/`)
-
-Mirrors becklar's per-workload apps: each `Application` points at the **same** chart but enables only
-its own workload via `helm.parameters` (the others `=false`), reads `values-development.yaml`, and
-deploys to namespace `rok-development`.
-```
-k8s/argocd/applications/rok-frontend-development.yaml   # enables frontend only
-k8s/argocd/applications/rok-backend-development.yaml    # enables backend only
-k8s/argocd/applications/rok-worker-development.yaml     # enables worker only — applied in Phase 9
-```
 
 ### 8.3 — deploy: push, bootstrap the namespace, apply the apps
 
 ArgoCD is pull-based, so push the chart first. Then create the release namespace and the Floci creds
 the per-workload SecretStores read (creds live in the SAME namespace — the lab stand-in for ROK's
 IRSA), and apply the two apps that are live now (worker waits for Phase 9).
+
 ```bash
-git add -A charts/ k8s/argocd apps/ terraform/main.tf commands.md
-git commit -m "..." && git push origin main
+# MAKE SURE LATES CHART CHANGES ARE PUSHED TO GITHUB
+```
+
+```bash
 kubectl create namespace rok-development
 kubectl -n rok-development create secret generic floci-aws-creds \
   --from-literal=access-key-id=test --from-literal=secret-access-key=test
