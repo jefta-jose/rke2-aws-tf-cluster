@@ -15,7 +15,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "0"
   labels:
-    {{- include "rok-app.labels" $ | nindent 4 }}
+    {{- include "rock-app.labels" $ | nindent 4 }}
     app.kubernetes.io/component: {{ $component | kebabcase }}
 spec:
   replicas: {{ $workload.replicas }}
@@ -30,7 +30,7 @@ spec:
         app.kubernetes.io/name: {{ $.Chart.Name }}
         app.kubernetes.io/instance: {{ $.Release.Name }}
         app.kubernetes.io/component: {{ $component | kebabcase }}
-        app.kubernetes.io/part-of: rok-app
+        app.kubernetes.io/part-of: rock-app
       {{- with $.Values.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}

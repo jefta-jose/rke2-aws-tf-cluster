@@ -9,7 +9,7 @@ metadata:
   name: {{ $workload.name }}
   namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "rok-app.labels" $ | nindent 4 }}
+    {{- include "rock-app.labels" $ | nindent 4 }}
     app.kubernetes.io/component: {{ $component | kebabcase }}
 spec:
   type: ClusterIP

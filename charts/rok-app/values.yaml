@@ -1,15 +1,15 @@
-# rok-app — map-driven chart (mirrors becklar_messaging_workloads).
+# rock-app — map-driven chart (mirrors becklar_messaging_workloads).
 # Add a workload = add an entry under `workloads:`; the templates range over it,
 # so no new template files are needed. Per-env image repos + remoteKeys live in
 # values-<env>.yaml (see values-development.yaml).
 
-imagePullSecrets: []            # ROK: [{ name: aws-registry }]; our local registry is open
-nodeSelector: {}                # lab: single worker node; ROK pins node-role.kubernetes.io/worker
+imagePullSecrets: []            # ROCK: [{ name: aws-registry }]; our local registry is open
+nodeSelector: {}                # lab: single worker node; ROCK pins node-role.kubernetes.io/worker
 podAnnotations: {}
 terminationGracePeriodSeconds: 30
 
 # LAB-ONLY: the per-workload SecretStores need AWS creds because Floci isn't IRSA.
-# Real ROK sets enabled: false — ESO authenticates via the node's IAM role (secretless),
+# Real ROCK sets enabled: false — ESO authenticates via the node's IAM role (secretless),
 # so the rendered SecretStore has NO auth block at all. This Secret is bootstrapped once
 # into the release namespace (not in git — it's a credential). See commands.md.
 secretStoreAuth:
@@ -22,7 +22,7 @@ workloads:
   # ---- server: static frontend (no secret) ----
   frontend:
     enabled: true
-    name: rok-frontend
+    name: rock-frontend
     replicas: 1
     image:
       repository: ""            # set per-env in values-<env>.yaml
@@ -46,7 +46,7 @@ workloads:
   # ---- server: API backend (secret via ESO -> SECRET_MESSAGE) ----
   backend:
     enabled: true
-    name: rok-backend
+    name: rock-backend
     replicas: 1
     image:
       repository: ""
@@ -63,9 +63,9 @@ workloads:
     env:
       AWS_REGION: us-east-1
     # secret plumbing (present => ExternalSecret + SecretStore are rendered)
-    secretName: rok-backend-secret
+    secretName: rock-backend-secret
     secretStore:
-      name: rok-backend-secret-store
+      name: rock-backend-secret-store
       provider:
         aws:
           service: SecretsManager
@@ -87,7 +87,7 @@ workloads:
   # Application flips it on.
   mailer:
     enabled: false
-    name: rok-mailer
+    name: rock-mailer
     replicas: 1
     image:
       repository: ""
@@ -104,10 +104,10 @@ workloads:
     env:
       AWS_REGION: us-east-1
     # SMTP host/port come from the shared general secret via ESO (same remoteKey as backend).
-    # dataFrom pulls every key of development-rok-general-secret; secretEnv picks the two we use.
-    secretName: rok-mailer-secret
+    # dataFrom pulls every key of development-rock-general-secret; secretEnv picks the two we use.
+    secretName: rock-mailer-secret
     secretStore:
-      name: rok-mailer-secret-store
+      name: rock-mailer-secret-store
       provider:
         aws:
           service: SecretsManager
@@ -115,7 +115,7 @@ workloads:
     externalSecret:
       refreshInterval: 1m
       creationPolicy: Owner
-      remoteKey: ""             # set per-env (development-rok-general-secret)
+      remoteKey: ""             # set per-env (development-rock-general-secret)
     secretEnv:
       SMTP_HOST: Smtp__Host     # -> mailpit-smtp.mailhog
       SMTP_PORT: Smtp__Port     # -> 1025

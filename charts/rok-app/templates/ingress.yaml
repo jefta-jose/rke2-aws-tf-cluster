@@ -1,8 +1,8 @@
 {{- /*
-One host-less Ingress PER workload (named after the workload), not one shared "rok-app"
+One host-less Ingress PER workload (named after the workload), not one shared "rock-app"
 Ingress. With the one-Application-per-workload model, each app renders only its own
 workload — a single shared Ingress name would make the frontend and backend apps fight
-over the same object. Separate names (rok-frontend / rok-backend) let Traefik merge the
+over the same object. Separate names (rock-frontend / rock-backend) let Traefik merge the
 path rules cleanly. Host-less because Floci's ALB rewrites the Host header (see Phase 8.4).
 */ -}}
 {{- range $component, $workload := .Values.workloads }}
@@ -14,7 +14,7 @@ metadata:
   name: {{ $workload.name }}
   namespace: {{ $.Release.Namespace }}
   labels:
-    {{- include "rok-app.labels" $ | nindent 4 }}
+    {{- include "rock-app.labels" $ | nindent 4 }}
     app.kubernetes.io/component: {{ $component | kebabcase }}
 spec:
   ingressClassName: traefik

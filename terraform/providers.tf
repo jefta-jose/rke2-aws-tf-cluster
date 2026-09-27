@@ -6,7 +6,7 @@ terraform {
       version = "~> 5.0"
     }
   }
-  # Local state for the lab (real ROK uses an S3 backend).
+  # Local state for the lab (real ROCK uses an S3 backend).
 }
 
 # Point the AWS provider at Floci. Dummy creds + skip the online checks that
@@ -23,7 +23,7 @@ provider "aws" {
     sts = "http://localhost:4566"
     iam = "http://localhost:4566"
     ec2 = "http://localhost:4566"
-    # ecr / elbv2 are wired up only to mirror ROK's infra — the lab does NOT use them
+    # ecr / elbv2 are wired up only to mirror ROCK's infra — the lab does NOT use them
     # in the real traffic/image paths (see the ALB/WAF note in main.tf):
     #   - ECR: no repos are provisioned here; images ship via a host-local registry:2
     #     instead, because Floci's ECR routes by *.localhost Host headers that the

@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────
-# ROK Infra Lab — .gitignore
+# ROCK Infra Lab — .gitignore
 # Sections: OS/editor · Secrets · Terraform · VMs (libvirt/cloud-init)
 #           Kubernetes/RKE2 · .NET (later) · JavaScript/Node (later)
 # ─────────────────────────────────────────────────────────────

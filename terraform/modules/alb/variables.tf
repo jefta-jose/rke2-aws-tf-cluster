@@ -1,5 +1,5 @@
 variable "name" {
-  description = "Name prefix (e.g. development-rok)"
+  description = "Name prefix (e.g. development-rock)"
   type        = string
 }
 

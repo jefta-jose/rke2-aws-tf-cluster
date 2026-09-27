@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Write /etc/rancher/rke2/config.yaml for the RKE2 SERVER.
-# Runs INSIDE rok-server; auto-detects this VM's virbr0 IP as node-ip.
+# Runs INSIDE rock-server; auto-detects this VM's virbr0 IP as node-ip.
 #   token          = shared join secret (agent must match)
 #   node-ip        = pins this node's identity
 #   tls-san        = names/IPs the API cert must be valid for (host + agent trust)
@@ -13,11 +13,11 @@ set -euo pipefail
 NODE_IP="$(hostname -I | awk '{print $1}')"
 mkdir -p /etc/rancher/rke2
 tee /etc/rancher/rke2/config.yaml >/dev/null <<EOF
-token: rok-lab-shared-token
+token: rock-lab-shared-token
 node-ip: ${NODE_IP}
 tls-san:
   - ${NODE_IP}
-  - rok-server
+  - rock-server
 write-kubeconfig-mode: "0644"
 EOF
 

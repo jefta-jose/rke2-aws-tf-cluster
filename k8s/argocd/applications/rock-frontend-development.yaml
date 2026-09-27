@@ -4,16 +4,16 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: rok-frontend-development
+  name: rock-frontend-development
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
     targetRevision: main
-    path: charts/rok-app
+    path: charts/rock-app
     helm:
-      releaseName: rok-frontend-development
+      releaseName: rock-frontend-development
       valueFiles:
         - values-development.yaml
       parameters:
@@ -25,7 +25,7 @@ spec:
           value: "false"
   destination:
     server: https://kubernetes.default.svc
-    namespace: rok-development
+    namespace: rock-development
   syncPolicy:
     automated:
       prune: true

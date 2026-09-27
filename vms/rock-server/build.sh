@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# build.sh — create and boot the rok-server VM on libvirt/KVM.
+# build.sh — create and boot the rock-server VM on libvirt/KVM.
 #
 # THE BIG PICTURE: a "cloud image" is a pre-installed Ubuntu disk that expects
 # cloud-init to configure it on first boot. So to make a working VM we need
@@ -10,7 +10,7 @@
 #   3. a writable disk for THIS VM    (so we don't dirty the shared base image)
 # Then `virt-install --import` defines the VM and powers it on.
 #
-# Run with:  sudo bash vms/rok-server/build.sh
+# Run with:  sudo bash vms/rock-server/build.sh
 # It is IDEMPOTENT — re-running skips anything already done, so it's safe.
 # ============================================================================
 
@@ -27,10 +27,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMG_DIR="/var/lib/libvirt/images"
 
 BASE="${IMG_DIR}/noble-server-cloudimg-amd64.img"   # the shared, read-only OS image
-SEED="${IMG_DIR}/rok-server-seed.iso"               # the cloud-init config CD-ROM
+SEED="${IMG_DIR}/rock-server-seed.iso"               # the cloud-init config CD-ROM
 URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 
-DISK="${IMG_DIR}/rok-server.qcow2"                  # this VM's own writable disk
+DISK="${IMG_DIR}/rock-server.qcow2"                  # this VM's own writable disk
 
 VCPUS=2          # 2 virtual CPUs  (RKE2 server wants ~2)
 MEM_MB=4096      # 4 GB RAM
@@ -66,9 +66,9 @@ else
 fi
 
 echo "==> 4/4 Define & boot the VM"
-# If a VM named rok-server already exists, don't try to create it again.
-if virsh -c qemu:///system dominfo rok-server >/dev/null 2>&1; then
-  echo "    domain rok-server already exists — skipping virt-install"
+# If a VM named rock-server already exists, don't try to create it again.
+if virsh -c qemu:///system dominfo rock-server >/dev/null 2>&1; then
+  echo "    domain rock-server already exists — skipping virt-install"
 else
   # virt-install registers the VM with libvirt and powers it on. What each flag
   # below does (NOTE: a trailing '\' just continues the command onto the next
@@ -86,7 +86,7 @@ else
   #   --noautoconsole ............ don't attach the console now; return to the shell
   virt-install \
     --connect qemu:///system \
-    --name rok-server \
+    --name rock-server \
     --virt-type kvm \
     --memory "$MEM_MB" \
     --vcpus "$VCPUS" \
@@ -105,4 +105,4 @@ echo "==> Done. Waiting a moment for DHCP lease..."
 # The VM needs a few seconds to boot and ask virbr0's DHCP for an IP. This may
 # be blank on the first try (still booting) — re-run domifaddr to see it.
 sleep 5
-virsh -c qemu:///system domifaddr rok-server || true
+virsh -c qemu:///system domifaddr rock-server || true

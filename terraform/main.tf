@@ -1,11 +1,11 @@
 locals {
   env      = "development"
-  project  = "rok"
-  name     = "development-rok"
+  project  = "rock"
+  name     = "development-rock"
   common_tags = {
     Terraform   = "true"
     Environment = "development"
-    Application = "rok"
+    Application = "rock"
   }
 }
 
@@ -21,7 +21,7 @@ module "network" {
 }
 
 ############################
-# Secrets Manager — development-rok-general-secret
+# Secrets Manager — development-rock-general-secret
 ############################
 module "development_secret" {
   source      = "./modules/secret"
@@ -29,7 +29,7 @@ module "development_secret" {
   environment = local.env
   application = "general"
   secret_value = jsonencode({
-    ConnectionStrings__Default = "Server=rds;Database=rok;User Id=sa;Password=Lab_Passw0rd!;"
+    ConnectionStrings__Default = "Server=rds;Database=rock;User Id=sa;Password=Lab_Passw0rd!;"
     Smtp__Host                 = "mailpit-smtp.mailhog"
     Smtp__Port                 = "1025"
     SECRET_MESSAGE             = "injected from Floci Secrets Manager via ESO"
@@ -78,9 +78,9 @@ resource "aws_iam_role" "rke2_node" {
   tags = merge(local.common_tags, { Name = "${local.name}-rke2-node" })
 }
 
-# SES send (mirrors "lowerenv-rok-email-ses-send").
+# SES send (mirrors "lowerenv-rock-email-ses-send").
 resource "aws_iam_policy" "email_ses_send" {
-  name        = "lowerenv-rok-email-ses-send"
+  name        = "lowerenv-rock-email-ses-send"
   description = "Allows sending emails via SES for the therok-email worker"
   policy = jsonencode({
     Version = "2012-10-17"
@@ -108,11 +108,11 @@ resource "aws_iam_role_policy_attachment" "node_ses_send" {
 }
 
 ############################
-# ALB + WAF — provisioned ONLY to mirror ROK's infra; NOT used in the lab's request path.
+# ALB + WAF — provisioned ONLY to mirror ROCK's infra; NOT used in the lab's request path.
 # Floci's ALB can't route into the libvirt subnet (192.168.122.0/24) — a VM-IP target just
 # times out — and Floci's LB rewrites the Host header, so a host-scoped Ingress never matches.
 # So the lab reaches the cluster via a socat bridge (host -> Traefik NodePort 30080), not the
-# ALB. We keep these resources for parity with real ROK but register no targets against them.
+# ALB. We keep these resources for parity with real ROCK but register no targets against them.
 ############################
 module "alb" {
   source           = "./modules/alb"
@@ -128,7 +128,7 @@ module "alb" {
 ############################
 module "waf" {
   source       = "./modules/waf"
-  name         = "nonprod-rok"
+  name         = "nonprod-rock"
   alb_arn      = module.alb.alb_arn
   accepted_ips = []
   tags         = local.common_tags

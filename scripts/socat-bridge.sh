@@ -4,12 +4,12 @@ set -e
 PORT=30080
 
 # Find the current IP of the RKE2 server VM
-SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server \
+SERVER_IP=$(virsh -c qemu:///system domifaddr rock-server \
   | awk '/ipv4/ {print $4}' \
   | cut -d/ -f1)
 
 if [ -z "$SERVER_IP" ]; then
-  echo "Could not find rok-server IP"
+  echo "Could not find rock-server IP"
   exit 1
 fi
 

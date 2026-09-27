@@ -1,4 +1,4 @@
-# Recreate the ROK Infra as a Learning Lab (Floci + real RKE2 VMs)
+# Recreate the ROCK Infra as a Learning Lab (Floci + real RKE2 VMs)
 
 ## Context & goal
 The real "TheRok" platform (studied in `/home/jeffndegwa/TheRokInfrastructure`) is a hub-and-spoke
@@ -13,7 +13,7 @@ recreate the *shapes and mechanisms* small enough to read by eye.
 **Two halves, wired on one Docker network + a VM network:**
 - **The "AWS" half = Floci** (a local AWS emulator on `localhost:4566`) running in Docker on the WSL2
   host. Provides ECR, Secrets Manager, SQS, SES, ALB (ELBv2), RDS SQL Server, WAF, IAM — provisioned
-  by **Terraform** (mirroring `rok-scaleout`'s Terraform).
+  by **Terraform** (mirroring `rock-scaleout`'s Terraform).
 - **The "compute" half = real RKE2 in lightweight VMs.** One RKE2 **server** VM + one RKE2 **agent**
   VM (optionally a second agent). Real systemd, real containerd, real agent-join on port **9345**.
 
@@ -46,7 +46,7 @@ confirms the toolchain before we commit.
         └─────────┼─────────────────────────────────────────────────┘
                   │  (host ↔ VM routing, Phase 5)
         ┌─────────┼───────────────────────┐   ┌───────────────────┐
-        │  VM: rok-server                 │   │  VM: rok-agent-1    │
+        │  VM: rock-server                 │   │  VM: rock-agent-1    │
         │  RKE2 server (etcd+control)     │◀──│  RKE2 agent        │
         │  Traefik (NodePort 30080)       │9345 join              │
         │  ArgoCD, External Secrets Op    │   │  workloads         │
@@ -66,7 +66,7 @@ confirms the toolchain before we commit.
 - Everything lives in `/home/jeffndegwa/rke2-aws-tf-cluster/`.
 
 ## Floci capability map (what's real vs what we substitute) — from research
-| ROK piece | Floci support | Lab approach |
+| ROCK piece | Floci support | Lab approach |
 |---|---|---|
 | ECR | **Real** `registry:2`, docker push/pull | Use as the real image registry |
 | Secrets Manager | **Real** storage, GetSecretValue | External Secrets Operator syncs from it |
@@ -101,23 +101,23 @@ Confirm the host can do everything before we build.
 - 1.3 Open the Floci web console (`/_floci/ui`) and mailpit UI.
 → Learn: Floci = AWS on localhost; the wire protocol is real.
 
-### Phase 2 — Terraform the AWS base (mirror rok-scaleout)
+### Phase 2 — Terraform the AWS base (mirror rock-scaleout)
 - 2.1 Terraform provider block pointed at Floci (dummy creds, skip flags, per-service endpoints).
-- 2.2 Create: ECR repos (frontend, backend), Secrets Manager secret (`development-rok-general-secret`
+- 2.2 Create: ECR repos (frontend, backend), Secrets Manager secret (`development-rock-general-secret`
   shape), SQS queue + DLQ, IAM role/policy, WAFv2 (IaC only), ALB + target group + listener rules
   (target left empty until the cluster exists).
 - 2.3 `terraform apply`; inspect resources in the Floci console.
-→ Learn: the exact Terraform ROK uses, applied locally against Floci.
+→ Learn: the exact Terraform ROCK uses, applied locally against Floci.
 
 ### Phase 3 — Real RKE2 server VM
-- 3.1 Launch `rok-server` VM.
+- 3.1 Launch `rock-server` VM.
 - 3.2 Install RKE2 server (`curl -sfL https://get.rke2.io | sh -`), write `config.yaml`
   (`node-ip`, `tls-san`, `write-kubeconfig-mode`, token), enable + start `rke2-server`.
 - 3.3 Pull kubeconfig to the host, `kubectl get nodes` → 1 node Ready.
 → Learn: real RKE2 server bootstrap, etcd, the node token, tls-san.
 
 ### Phase 4 — Real RKE2 agent join (the crash lesson, done right)
-- 4.1 Launch `rok-agent-1` VM.
+- 4.1 Launch `rock-agent-1` VM.
 - 4.2 Install RKE2 agent, `config.yaml` → `server: https://<server-ip>:9345`, `token`, unique
   `node-name`/`node-ip`; start `rke2-agent`.
 - 4.3 `kubectl get nodes` → 2 nodes Ready. Inspect why it's clean now: separate kernels, separate
@@ -129,14 +129,14 @@ Confirm the host can do everything before we build.
 - 5.2 Reserve Traefik NodePort (e.g. 30080). Register the VM IP + NodePort as the Floci ALB target
   group target; confirm the ALB listener forwards to it (once Traefik is up in Phase 6).
 - 5.3 Handle DNS with `/etc/hosts` entries (Route53 is mock).
-→ Learn: node IP, NodePort, and the ALB→ingress hop that ROK's ALB→Traefik does.
+→ Learn: node IP, NodePort, and the ALB→ingress hop that ROCK's ALB→Traefik does.
 
-### Phase 6 — Platform add-ons via Helm (ROK bootstrap order)
-Following ROK's `setup-env.md` order:
+### Phase 6 — Platform add-ons via Helm (ROCK bootstrap order)
+Following ROCK's `setup-env.md` order:
 - 6.1 Traefik (ingress controller, NodePort service on 30080) + a middleware.
 - 6.2 External Secrets Operator; `ClusterSecretStore` → Floci Secrets Manager (`http://<host-ip>:4566`).
 - 6.3 ArgoCD; expose it; log in via CLI.
-→ Learn: the RKE2 platform bootstrap sequence ROK runs.
+→ Learn: the RKE2 platform bootstrap sequence ROCK runs.
 
 ### Phase 7 — ECR image flow
 - 7.1 Build a tiny **frontend** (static/nginx) and **backend** (Node/HTTP) image.
@@ -150,20 +150,20 @@ Following ROK's `setup-env.md` order:
 - 8.2 ArgoCD `Application`(s) pointed at the chart(s); sync; pods come up pulling from Floci ECR;
   secrets arrive via ESO from Floci Secrets Manager.
 - 8.3 Hit the app end-to-end **through the Floci ALB** → Traefik → frontend/backend.
-→ Learn: the whole ROK GitOps loop, ingress routing, secret injection — end to end.
+→ Learn: the whole ROCK GitOps loop, ingress routing, secret injection — end to end.
 
 ### Phase 9 — In-cluster mailpit + a mailer wired to the frontend
-mailpit is a **test mail sink deployed in the cluster** (as ROK does in lower envs) — no real email,
+mailpit is a **test mail sink deployed in the cluster** (as ROCK does in lower envs) — no real email,
 no SES, no AWS in the path. The frontend sends a message straight through to mailpit over SMTP.
 - 9.1 Deploy mailpit **into the cluster**: a Deployment + Service `mailpit` (SMTP `:1025` ClusterIP,
   web UI `:8025` exposed via a host-less Ingress path / NodePort). Confirm the UI loads.
-- 9.2 Add a new **mailer** workload to the `rok-app` chart: a small Node service with
+- 9.2 Add a new **mailer** workload to the `rock-app` chart: a small Node service with
   `POST /api/email {to,subject,body}` that opens an SMTP connection to `mailpit:1025` and sends. SMTP
-  host/port come from `development-rok-general-secret` (`Smtp__Host`/`Smtp__Port`) via ESO. Service +
+  host/port come from `development-rock-general-secret` (`Smtp__Host`/`Smtp__Port`) via ESO. Service +
   host-less Ingress (`/api/email`).
 - 9.3 Frontend: add a simple send-email form → `fetch("/api/email", …)` → mailer → mailpit. Submit
   from the browser and watch the message land in the mailpit UI.
-→ Learn: the ROK in-cluster mailpit test-sink pattern, a frontend→service→mailpit hop, and service
+→ Learn: the ROCK in-cluster mailpit test-sink pattern, a frontend→service→mailpit hop, and service
   config pulled from Secrets Manager via ESO — all cloud-email-free.
 ---
 
@@ -178,6 +178,6 @@ no SES, no AWS in the path. The frontend sends a message straight through to mai
 - `docker compose down -v` in `~/floci-docker` removes Floci + volumes; the `registry:2` and the
   Phase-10 Postgres composes are separate stacks (tear down independently). mailpit is in-cluster
   (`kubectl delete`).
-- Delete the VMs with the chosen tool (e.g. `multipass delete --purge rok-server rok-agent-1`).
+- Delete the VMs with the chosen tool (e.g. `multipass delete --purge rock-server rock-agent-1`).
 - `terraform destroy` against Floci (or just drop the Floci volume).
 - Everything else is plain files under this directory.

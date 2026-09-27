@@ -1,4 +1,4 @@
-// Tiny dependency-free HTTP backend for the ROK lab.
+// Tiny dependency-free HTTP backend for the ROCK lab.
 // - GET /healthz  -> 200 "ok"  (used by ALB/Traefik health checks)
 // - GET /api/hello -> JSON { message, host, secretPresent }
 // SECRET_MESSAGE is injected later via External Secrets Operator (Phase 8);
@@ -18,7 +18,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(
       JSON.stringify({
-        message: "hello from the ROK-lab backend",
+        message: "hello from the ROCK-lab backend",
         host: os.hostname(),
         secret: SECRET_MESSAGE,
         time: new Date().toISOString(),

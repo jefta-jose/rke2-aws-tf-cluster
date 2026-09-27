@@ -1,7 +1,7 @@
-// rok-mailer — Phase 9.2
+// rock-mailer — Phase 9.2
 // A tiny, dependency-free service: POST /api/email {to,subject,body} opens a raw
 // SMTP conversation with the in-cluster mailpit sink and sends the message.
-// SMTP_HOST/SMTP_PORT arrive as env (from development-rok-general-secret via ESO:
+// SMTP_HOST/SMTP_PORT arrive as env (from development-rock-general-secret via ESO:
 // Smtp__Host=mailpit-smtp.mailhog, Smtp__Port=1025). No auth, no TLS — mailpit is a
 // test sink. Same zero-dependency style as apps/backend/server.js.
 const http = require('http');
@@ -10,7 +10,7 @@ const net = require('net');
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const SMTP_HOST = process.env.SMTP_HOST || 'mailpit-smtp.mailhog';
 const SMTP_PORT = parseInt(process.env.SMTP_PORT || '1025', 10);
-const MAIL_FROM = process.env.MAIL_FROM || 'noreply@rok.local';
+const MAIL_FROM = process.env.MAIL_FROM || 'noreply@rock.local';
 
 // Minimal SMTP client. Drives an ordered exchange: wait for `code`, then send `cmd`.
 // The banner (220) is the first thing the server sends, so it leads the list.
@@ -37,7 +37,7 @@ function sendMail({ to, subject, body }) {
     `\r\n.\r\n`;
 
   const steps = [
-    { code: 220, cmd: `EHLO rok-mailer\r\n` },
+    { code: 220, cmd: `EHLO rock-mailer\r\n` },
     { code: 250, cmd: `MAIL FROM:<${from}>\r\n` },
     { code: 250, cmd: `RCPT TO:<${to}>\r\n` },
     { code: 250, cmd: `DATA\r\n` },
@@ -131,5 +131,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`rok-mailer listening on :${PORT}, SMTP sink ${SMTP_HOST}:${SMTP_PORT}`);
+  console.log(`rock-mailer listening on :${PORT}, SMTP sink ${SMTP_HOST}:${SMTP_PORT}`);
 });

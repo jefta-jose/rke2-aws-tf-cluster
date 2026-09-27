@@ -1,9 +1,9 @@
-# NUKE.md — full teardown runbook (ROK Infra Learning Lab)
+# NUKE.md — full teardown runbook (ROCK Infra Learning Lab)
 
 
 ## 1. Terraform +  Floci + Docker — destroy the AWS base
 
-Destroys everything Terraform provisioned into Floci: `development-rok-general-secret`,
+Destroys everything Terraform provisioned into Floci: `development-rock-general-secret`,
 SQS `email` + `email-dlq`, IAM node role/policies, the ALB + NodePort 30080 target group, and the WAFv2
 WebACL. (No ECR repos — Terraform provisions none; images ship via the host-local `registry:2`.)
 
@@ -22,17 +22,17 @@ docker volume rm floci-ecr-registry-data
 ```
 ---
 
-## 2. VMs — destroy rok-server + rok-agent-1
+## 2. VMs — destroy rock-server + rock-agent-1
 
 Destroys (force-stops) then undefines both RKE2 nodes.
 
 > **Order:** VMs FIRST, the libvirt `default` network LAST
 
 ```bash
-virsh -c qemu:///system destroy rok-server
-virsh -c qemu:///system undefine rok-server
-virsh -c qemu:///system destroy rok-agent-1
-virsh -c qemu:///system undefine rok-agent-1
+virsh -c qemu:///system destroy rock-server
+virsh -c qemu:///system undefine rock-server
+virsh -c qemu:///system destroy rock-agent-1
+virsh -c qemu:///system undefine rock-agent-1
 virsh -c qemu:///system list --all
 ```
 
@@ -50,8 +50,8 @@ delete the **per-VM overlays / seed ISOs** (they're rebuilt in seconds from the 
 is optional and NOT required for a rebuild:
 
 ```bash
-sudo rm -f /var/lib/libvirt/images/rok-server.qcow2 /var/lib/libvirt/images/rok-server-seed.iso
-sudo rm -f /var/lib/libvirt/images/rok-agent-1.qcow2 /var/lib/libvirt/images/rok-agent-1-seed.iso
+sudo rm -f /var/lib/libvirt/images/rock-server.qcow2 /var/lib/libvirt/images/rock-server-seed.iso
+sudo rm -f /var/lib/libvirt/images/rock-agent-1.qcow2 /var/lib/libvirt/images/rock-agent-1-seed.iso
 ```
 
 ---
@@ -69,13 +69,13 @@ pkill -f 'socat.*30080'
 ### 5.2 Remove any stale /etc/hosts entries
 
 Both ArgoCD and mailpit are now **host-less** (`/argocd` and `/mailpit`), so a fresh rebuild adds
-**nothing** to `/etc/hosts`. These `sed`s only clean up leftovers from older runs — an `argocd.rok.local`
-line from the pre-host-less ArgoCD Ingress, or a `mailpit.rok.local` line from the first mailpit attempt
+**nothing** to `/etc/hosts`. These `sed`s only clean up leftovers from older runs — an `argocd.rock.local`
+line from the pre-host-less ArgoCD Ingress, or a `mailpit.rock.local` line from the first mailpit attempt
 (9.1a). Harmless no-ops if the lines aren't there:
 
 ```bash
-sudo sed -i '/argocd\.rok\.local/d' /etc/hosts
-sudo sed -i '/mailpit\.rok\.local/d' /etc/hosts
+sudo sed -i '/argocd\.rock\.local/d' /etc/hosts
+sudo sed -i '/mailpit\.rock\.local/d' /etc/hosts
 ```
 
 ### 5.3 Kubeconfig
@@ -83,5 +83,5 @@ sudo sed -i '/mailpit\.rok\.local/d' /etc/hosts
 The session-only kubeconfig lives at:
 
 ```bash
-rm -f /home/jeffndegwa/.kube/rok-lab.yaml
+rm -f /home/jeffndegwa/.kube/rock-lab.yaml
 ```

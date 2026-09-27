@@ -1,4 +1,4 @@
-# Trimmed from rok-scaleout waf.tf. Floci WAFv2 is config-only (no real filtering) so this is
+# Trimmed from rock-scaleout waf.tf. Floci WAFv2 is config-only (no real filtering) so this is
 # IaC to read by eye: IP set + default-allow WebACL with a representative rule set + ALB association.
 # Dropped from the real ACL: KMS-encrypted CloudWatch logging, and most managed groups.
 resource "aws_wafv2_ip_set" "accepted" {

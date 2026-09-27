@@ -10,8 +10,8 @@ type: Opaque
 stringData:
   access-key-id: "test"
   secret-access-key: "test"
-# NOTE: the app-specific ExternalSecret (rok-general-secret) moved into the
-# rok-app Helm chart (charts/rok-app) so ArgoCD owns it. This file now holds only
+# NOTE: the app-specific ExternalSecret (rock-general-secret) moved into the
+# rock-app Helm chart (charts/rock-app) so ArgoCD owns it. This file now holds only
 # the cluster-scoped ESO bootstrap: the AWS creds Secret + the ClusterSecretStore.
 ---
 # ===>

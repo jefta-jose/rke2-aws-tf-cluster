@@ -21,6 +21,6 @@ spec:
         server.rootpath: /argocd
     server:
       # Our own host-less Ingress (k8s/argocd/install/ingress.yaml) routes /argocd; don't let the chart
-      # create a host-scoped one (that needed argocd.rok.local + an /etc/hosts entry).
+      # create a host-scoped one (that needed argocd.rock.local + an /etc/hosts entry).
       ingress:
         enabled: false

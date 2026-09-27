@@ -78,7 +78,7 @@ you're basically saying:
 Your script has:
 
 ```bash
-virsh -c qemu:///system dominfo rok-server
+virsh -c qemu:///system dominfo rock-server
 ```
 
 Break that down:
@@ -90,7 +90,7 @@ virsh
  │       │
  │       └── connect to the system libvirt instance
  │
- └── dominfo rok-server
+ └── dominfo rock-server
          │
          └── give me information about this VM
 ```
@@ -116,37 +116,37 @@ virsh list --all
 Start:
 
 ```bash
-virsh start rok-server
+virsh start rock-server
 ```
 
 Stop gracefully:
 
 ```bash
-virsh shutdown rok-server
+virsh shutdown rock-server
 ```
 
 Force stop:
 
 ```bash
-virsh destroy rok-server
+virsh destroy rock-server
 ```
 
 See information:
 
 ```bash
-virsh dominfo rok-server
+virsh dominfo rock-server
 ```
 
 See the VM's IP:
 
 ```bash
-virsh domifaddr rok-server
+virsh domifaddr rock-server
 ```
 
 Connect to its console:
 
 ```bash
-virsh console rok-server
+virsh console rock-server
 ```
 
 ---

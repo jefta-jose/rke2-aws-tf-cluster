@@ -1,4 +1,4 @@
-# Trimmed from rok-scaleout alb.tf: one public ALB whose HTTP listener forwards to the
+# Trimmed from rock-scaleout alb.tf: one public ALB whose HTTP listener forwards to the
 # Traefik NodePort target group. Targets (VM IP:NodePort) are registered in Phase 5, not here.
 # Lab simplification: plain HTTP :80 forward (no ACM/HTTPS redirect the real stack uses).
 resource "aws_security_group" "alb" {

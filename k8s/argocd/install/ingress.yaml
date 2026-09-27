@@ -1,7 +1,7 @@
 # Phase 6.3 — ArgoCD UI/API Ingress. Host-LESS on the "/argocd" path (same pattern
 # as mailpit's /mailpit), so it's reachable at http://localhost:30080/argocd through
 # the socat bridge with NO hostname and NO /etc/hosts entry (the old host-scoped
-# argocd.rok.local Ingress needed one, and a Windows browser can't resolve it anyway).
+# argocd.rock.local Ingress needed one, and a Windows browser can't resolve it anyway).
 # "/argocd" is more specific than the frontend's host-less "/" rule, so Traefik routes
 # them apart with no collision.
 #

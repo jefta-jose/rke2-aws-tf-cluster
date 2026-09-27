@@ -3,17 +3,17 @@
 workloads:
   frontend:
     image:
-      repository: 192.168.122.1:5000/rok-frontend
+      repository: 192.168.122.1:5000/rock-frontend
       tag: v001          # v2 adds the Phase 9.3 send-email form
   backend:
     image:
-      repository: 192.168.122.1:5000/rok-backend
+      repository: 192.168.122.1:5000/rock-backend
       tag: v001
     externalSecret:
-      remoteKey: development-rok-general-secret
+      remoteKey: development-rock-general-secret
   mailer:
     image:
-      repository: 192.168.122.1:5000/rok-mailer
+      repository: 192.168.122.1:5000/rock-mailer
       tag: v001
     externalSecret:
-      remoteKey: development-rok-general-secret
+      remoteKey: development-rock-general-secret

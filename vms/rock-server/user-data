@@ -1,6 +1,6 @@
 #cloud-config
 # ============================================================================
-# cloud-init "user-data" for the rok-server VM.
+# cloud-init "user-data" for the rock-server VM.
 #
 # WHAT THIS IS: Ubuntu cloud images boot blank (no user, no password). On first
 # boot, a program called cloud-init looks for a "user-data" file and uses it to
@@ -10,8 +10,8 @@
 # ============================================================================
 
 # --- Machine identity -------------------------------------------------------
-hostname: rok-server        # the short name the machine calls itself
-fqdn: rok-server            # its "full" name (same here; we have no DNS domain)
+hostname: rock-server        # the short name the machine calls itself
+fqdn: rock-server            # its "full" name (same here; we have no DNS domain)
 manage_etc_hosts: true      # let cloud-init keep /etc/hosts correct for us
 preserve_hostname: false    # allow cloud-init to SET the hostname on first boot
 

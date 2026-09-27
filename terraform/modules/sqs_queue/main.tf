@@ -1,4 +1,4 @@
-# Mirrors rok-scaleout modules/sqs_queue verbatim (name, SSE, redrive, producer/consumer policies).
+# Mirrors rock-scaleout modules/sqs_queue verbatim (name, SSE, redrive, producer/consumer policies).
 locals {
   queue_name = var.fifo_queue ? "${var.environment}-${var.project}-${var.application}.fifo" : "${var.environment}-${var.project}-${var.application}"
 }

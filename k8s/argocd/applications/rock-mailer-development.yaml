@@ -1,21 +1,21 @@
 # Owns ONLY the mailer (Deployment + Service + Ingress /api/email + SecretStore +
-# ExternalSecret). Apply in Phase 9.2 AFTER building+pushing the rok-mailer image.
+# ExternalSecret). Apply in Phase 9.2 AFTER building+pushing the rock-mailer image.
 # It flips workloads.mailer.enabled on (values.yaml ships it false) and disables the
 # rest so this app renders just the mailer. The mailer reads SMTP_HOST/SMTP_PORT from
-# development-rok-general-secret via ESO and sends to mailpit-smtp.mailhog:1025.
+# development-rock-general-secret via ESO and sends to mailpit-smtp.mailhog:1025.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: rok-mailer-development
+  name: rock-mailer-development
   namespace: argocd
 spec:
   project: default
   source:
     repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
     targetRevision: main
-    path: charts/rok-app
+    path: charts/rock-app
     helm:
-      releaseName: rok-mailer-development
+      releaseName: rock-mailer-development
       valueFiles:
         - values-development.yaml
       parameters:
@@ -29,7 +29,7 @@ spec:
           value: "false"
   destination:
     server: https://kubernetes.default.svc
-    namespace: rok-development
+    namespace: rock-development
   syncPolicy:
     automated:
       prune: true

@@ -1,4 +1,4 @@
-# Commands Log — ROK Infra Learning Lab (Floci + real RKE2 VMs)
+# Commands Log — ROCK Infra Learning Lab (Floci + real RKE2 VMs)
 
 > Clean slate — 2026-09-24. Logs only commands that actually worked, written step-by-step as we go.
 > See `PLAN.md` for the full design.
@@ -45,23 +45,23 @@ sudo virsh -c qemu:///system net-list --all
 ```
 Result: `default   active   yes   yes`. Each VM gets a distinct routable IP on virbr0 (full L2 between nodes + DHCP), which is why libvirt (not Lima) is the VM layer.
 
-## Phase 3 — rok-server VM (Ubuntu 24.04 cloud image on virbr0)
+## Phase 3 — rock-server VM (Ubuntu 24.04 cloud image on virbr0)
 
 ### 3.1 Build & boot the VM
-Config lives in `vms/rok-server/` (heavily commented): `user-data` + `meta-data` (cloud-init: hostname + SSH key) and `build.sh` (downloads the Ubuntu 24.04 cloud image, builds a `cidata` seed ISO with genisoimage, makes a qcow2 overlay disk, then `virt-install --import`). One idempotent command:
+Config lives in `vms/rock-server/` (heavily commented): `user-data` + `meta-data` (cloud-init: hostname + SSH key) and `build.sh` (downloads the Ubuntu 24.04 cloud image, builds a `cidata` seed ISO with genisoimage, makes a qcow2 overlay disk, then `virt-install --import`). One idempotent command:
 ```bash
-sudo bash /home/jeffndegwa/rke2-aws-tf-cluster/vms/rok-server/build.sh
+sudo bash /home/jeffndegwa/rke2-aws-tf-cluster/vms/rock-server/build.sh
 ```
-Result: VM `rok-server` created and booted (2 vCPU / 4 GB / 20 GB). Grab its virbr0 IP and
+Result: VM `rock-server` created and booted (2 vCPU / 4 GB / 20 GB). Grab its virbr0 IP and
 **save it in a HOST shell variable** so the SSH step already has it — no copy-pasting the raw
 `<node-ip>`:
 
 
 ### 3.2 Install the RKE2 server + write config
-Derive rok-server's IP into a HOST shell var (cloud-init done → passwordless SSH).
+Derive rock-server's IP into a HOST shell var (cloud-init done → passwordless SSH).
 `config.yaml`: token = shared join secret, node-ip pins identity, tls-san so host/agent trust the API cert, kubeconfig readable.
 ```bash
-SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+SERVER_IP=$(virsh -c qemu:///system domifaddr rock-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
 echo "SERVER_IP=$SERVER_IP"
 ```
 Write the config by **piping a script into the VM over SSH** (no multi-line paste — the file carries
@@ -87,24 +87,24 @@ export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
 export PATH=$PATH:/var/lib/rancher/rke2/bin
 kubectl get nodes -o wide
 ```
-Result: after ~4 min (etcd + control plane + Canal CNI pulls), `rok-server` is `Ready` (control-plane,etcd), internal IP node-ip. Its kernel `6.8.0-139-generic` differs from the WSL2 host kernel — proof each node owns its kernel (separate netfilter/conntrack/cgroups), the reason the agent join is clean in VMs.
+Result: after ~4 min (etcd + control plane + Canal CNI pulls), `rock-server` is `Ready` (control-plane,etcd), internal IP node-ip. Its kernel `6.8.0-139-generic` differs from the WSL2 host kernel — proof each node owns its kernel (separate netfilter/conntrack/cgroups), the reason the agent join is clean in VMs.
 
-## Phase 4 — rok-agent-1 VM + clean RKE2 agent join
+## Phase 4 — rock-agent-1 VM + clean RKE2 agent join
 
 ### 4.1 Build & boot the agent VM
-Config in `vms/rok-agent-1/` (mirrors rok-server, hostname `rok-agent-1`, 2 vCPU / 4 GB). Reuses the base image already downloaded. On the HOST:
+Config in `vms/rock-agent-1/` (mirrors rock-server, hostname `rock-agent-1`, 2 vCPU / 4 GB). Reuses the base image already downloaded. On the HOST:
 ```bash
-sudo bash /home/jeffndegwa/rke2-aws-tf-cluster/vms/rok-agent-1/build.sh
+sudo bash /home/jeffndegwa/rke2-aws-tf-cluster/vms/rock-agent-1/build.sh
 ```
 
 Grab the agent's virbr0 IP into a HOST variable, same as the server:
 
 
 ### 4.2 Install + configure the RKE2 agent
-Derive both IPs into HOST shell vars (`SERVER_IP` = rok-server's node-ip, `AGENT_IP` = this worker):
+Derive both IPs into HOST shell vars (`SERVER_IP` = rock-server's node-ip, `AGENT_IP` = this worker):
 ```bash
-SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
-AGENT_IP=$(virsh -c qemu:///system domifaddr rok-agent-1 | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+SERVER_IP=$(virsh -c qemu:///system domifaddr rock-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+AGENT_IP=$(virsh -c qemu:///system domifaddr rock-agent-1 | awk '/ipv4/ {print $4}' | cut -d/ -f1)
 echo "SERVER_IP=$SERVER_IP AGENT_IP=$AGENT_IP"
 ```
 Write the agent config by **piping a script into the agent over SSH**, passing `SERVER_IP` as its
@@ -127,7 +127,7 @@ On the agent:
 sudo systemctl enable --now rke2-agent.service
 ```
 On the server: `kubectl get nodes -o wide`.
-Result: agent dialed `<server-ip>:6443` HEALTHY→ACTIVE and registered cleanly (no host crash). Was briefly `NotReady` (`cni plugin not initialized`) while Canal finished; a few transient Docker Hub "image not found" pulls self-healed on RKE2 retry. After ~2 min: **both nodes `Ready`** (rok-server control-plane,etcd + rok-agent-1 worker). Phase 4 checkpoint met.
+Result: agent dialed `<server-ip>:6443` HEALTHY→ACTIVE and registered cleanly (no host crash). Was briefly `NotReady` (`cni plugin not initialized`) while Canal finished; a few transient Docker Hub "image not found" pulls self-healed on RKE2 retry. After ~2 min: **both nodes `Ready`** (rock-server control-plane,etcd + rock-agent-1 worker). Phase 4 checkpoint met.
 Note for Phase 6: this RKE2 build ships **Traefik** (`rke2-traefik` pod) as the bundled ingress, not ingress-nginx — may cover part of Phase 6.1. Confirm later.
 
 ## Host access — drive the cluster from the HOST (session-only kubeconfig)
@@ -145,34 +145,34 @@ Prereqs already met on the host: `kubectl v1.36.1` at `/usr/local/bin/kubectl` (
 so the host can reach the API. The cert already trusts that IP (it's in the Phase 3 `tls-san`), so no
 TLS complaints. `write-kubeconfig-mode: "0644"` (Phase 3) makes the file world-readable → plain `cat`
 over SSH works, no `sudo` password prompt.
-Derive rok-server's current virbr0 IP (DHCP — don't hardcode it):
+Derive rock-server's current virbr0 IP (DHCP — don't hardcode it):
 ```bash
-SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+SERVER_IP=$(virsh -c qemu:///system domifaddr rock-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
 echo "SERVER_IP=$SERVER_IP"
 mkdir -p ~/.kube
-ssh ubuntu@"$SERVER_IP" 'cat /etc/rancher/rke2/rke2.yaml' | sed "s/127.0.0.1/$SERVER_IP/" > ~/.kube/rok-lab.yaml
-chmod 600 ~/.kube/rok-lab.yaml
+ssh ubuntu@"$SERVER_IP" 'cat /etc/rancher/rke2/rke2.yaml' | sed "s/127.0.0.1/$SERVER_IP/" > ~/.kube/rock-lab.yaml
+chmod 600 ~/.kube/rock-lab.yaml
 ```
 
 ### B. Point THIS shell at the cluster (dies with the session)
 ```bash
-export KUBECONFIG="$HOME/.kube/rok-lab.yaml"
+export KUBECONFIG="$HOME/.kube/rock-lab.yaml"
 kubectl get nodes -o wide
 ```
-Result: both nodes `Ready` from the host — `rok-server` (control-plane,etcd, 192.168.122.138) and
-`rok-agent-1` (worker, 192.168.122.105), both `v1.36.4+rke2r1`, containerd 2.3.4.
+Result: both nodes `Ready` from the host — `rock-server` (control-plane,etcd, 192.168.122.138) and
+`rock-agent-1` (worker, 192.168.122.105), both `v1.36.4+rke2r1`, containerd 2.3.4.
 Session-only proof: `export` lives only in this shell. New terminal → `KUBECONFIG` unset → `kubectl`
 falls back to `~/.kube/config` (which doesn't know this cluster) → can't reach it. To use the lab in a
 future terminal, deliberately re-run the `export` line from step B.
 
-> ⚠️ DHCP caveat: if `rok-server`'s IP changes on a later boot, `~/.kube/rok-lab.yaml` points at the
-> stale IP. Re-run step A with the new `SERVER_IP` (grab it via `virsh -c qemu:///system domifaddr rok-server`).
+> ⚠️ DHCP caveat: if `rock-server`'s IP changes on a later boot, `~/.kube/rock-lab.yaml` points at the
+> stale IP. Re-run step A with the new `SERVER_IP` (grab it via `virsh -c qemu:///system domifaddr rock-server`).
 
 ## Phase 2 — Terraform the AWS base into Floci
 
 Provider points at Floci (`localhost:4566`, dummy creds, skip flags). Provisions the network,
-`development-rok-general-secret`, SQS `email` + `email-dlq` (FIFO), and IAM node role/policies. It also
-provisions an ALB → NodePort 30080 target group + a WAFv2 WebACL, but those exist only to mirror ROK's
+`development-rock-general-secret`, SQS `email` + `email-dlq` (FIFO), and IAM node role/policies. It also
+provisions an ALB → NodePort 30080 target group + a WAFv2 WebACL, but those exist only to mirror ROCK's
 infra — the lab does not use them (traffic reaches the cluster via socat, not the ALB; see 8.4/8.5).
 ```bash
 cd /home/jeffndegwa/rke2-aws-tf-cluster/terraform
@@ -198,8 +198,8 @@ stripped: interactive zsh doesn't treat
 `no such user`.) `HOST_IP` is the stable virbr0 gateway (~192.168.122.1):
 ```bash
 HOST_IP=$(ip -4 addr show virbr0 | awk '/inet / {print $2}' | cut -d/ -f1)
-SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server  | awk '/ipv4/ {print $4}' | cut -d/ -f1)
-AGENT_IP=$(virsh -c qemu:///system domifaddr rok-agent-1 | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+SERVER_IP=$(virsh -c qemu:///system domifaddr rock-server  | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+AGENT_IP=$(virsh -c qemu:///system domifaddr rock-agent-1 | awk '/ipv4/ {print $4}' | cut -d/ -f1)
 printf 'HOST_IP=%s\nSERVER_IP=%s\nAGENT_IP=%s\n' "$HOST_IP" "$SERVER_IP" "$AGENT_IP"
 ```
 
@@ -228,7 +228,7 @@ forward to. Customize a
 `kube-system`); the helm-controller deep-merges its `valuesContent` and re-runs the install. Manifest
 lives at `k8s/traefik/nodeport.yaml`; apply from the HOST:
 ```bash
-export KUBECONFIG="$HOME/.kube/rok-lab.yaml"
+export KUBECONFIG="$HOME/.kube/rock-lab.yaml"
 kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/traefik/nodeport.yaml
 ```
 Verify (single-line jsonpath):
@@ -254,7 +254,7 @@ Install ESO the RKE2-native way (no `helm` on the host): a **`HelmChart`** CR (`
 that runs Traefik. Chart pinned to `external-secrets 2.11.0` (appVersion v2.11.0). Manifest at
 `k8s/external-secrets/helmchart.yaml`; apply from the HOST:
 ```bash
-export KUBECONFIG="$HOME/.kube/rok-lab.yaml"
+export KUBECONFIG="$HOME/.kube/rock-lab.yaml"
 kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/external-secrets/helmchart.yaml
 ```
 Watch the install Job, then confirm pods + CRDs:
@@ -304,7 +304,7 @@ reached through the same socat bridge as the app). The chart's own Ingress is **
 (`server.ingress.enabled: false`); our host-less Ingress lives in `k8s/argocd/install/ingress.yaml` (path
 `/argocd`, class `traefik`), exactly like mailpit's `/mailpit`. Apply both from the HOST:
 ```bash
-export KUBECONFIG="$HOME/.kube/rok-lab.yaml"
+export KUBECONFIG="$HOME/.kube/rock-lab.yaml"
 kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/argocd/install/helmchart.yaml
 ```
 
@@ -338,7 +338,7 @@ Host-less `/argocd` means the UI rides the **same front door as the app** throug
 port-forward, no hosts file**. Two entry points depending on where the browser runs:
 - **WSL2 side** (WSLg browser or curl): hit the node directly — `http://$SERVER_IP:30080/argocd`.
 - **Windows Chrome:** it can't reach `192.168.122.0/24`, so bring up the **socat bridge** — the lab's
-  single front door (§8.4). The helper script (re)starts it against rok-server's current IP:
+  single front door (§8.4). The helper script (re)starts it against rock-server's current IP:
 ```bash
 bash /home/jeffndegwa/rke2-aws-tf-cluster/scripts/socat-bridge.sh
 ```
@@ -372,19 +372,19 @@ docker run -d --restart unless-stopped --name lab-registry \
 
 ```bash
 cd /home/jeffndegwa/rke2-aws-tf-cluster/apps/backend
-docker build -t rok-backend:v001 .
-docker tag rok-backend:v001  localhost:5000/rok-backend:v001
+docker build -t rock-backend:v001 .
+docker tag rock-backend:v001  localhost:5000/rock-backend:v001
 ```
 
 ```bash
 cd /home/jeffndegwa/rke2-aws-tf-cluster/apps/frontend
-docker build -t rok-frontend:v001 .
-docker tag rok-frontend:v001  localhost:5000/rok-frontend:v001
+docker build -t rock-frontend:v001 .
+docker tag rock-frontend:v001  localhost:5000/rock-frontend:v001
 ```
 
 ```bash
-docker push localhost:5000/rok-frontend:v001
-docker push localhost:5000/rok-backend:v001
+docker push localhost:5000/rock-frontend:v001
+docker push localhost:5000/rock-backend:v001
 ```
 
 check images in the repo
@@ -394,7 +394,7 @@ curl -s http://localhost:5000/v2/_catalog
 
 check repo can be reached from inside the VMs
 ```bash
-SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+SERVER_IP=$(virsh -c qemu:///system domifaddr rock-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
 ssh ubuntu@"$SERVER_IP" curl -s http://192.168.122.1:5000/v2/_catalog
 ```
 
@@ -404,8 +404,8 @@ ssh ubuntu@"$SERVER_IP" curl -s http://192.168.122.1:5000/v2/_catalog
 `/etc/rancher/rke2/registries.yaml` on **every** node, then RKE2 restarted (containerd reads it only at
 start). Server restart bounces the control plane ~30–60s; both nodes returned `Ready`.
 ```bash
-SERVER_IP=$(virsh -c qemu:///system domifaddr rok-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
-AGENT_IP=$(virsh -c qemu:///system domifaddr rok-agent-1 | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+SERVER_IP=$(virsh -c qemu:///system domifaddr rock-server | awk '/ipv4/ {print $4}' | cut -d/ -f1)
+AGENT_IP=$(virsh -c qemu:///system domifaddr rock-agent-1 | awk '/ipv4/ {print $4}' | cut -d/ -f1)
 echo "SERVER_IP=$SERVER_IP AGENT_IP=$AGENT_IP"
 ```
 
@@ -435,7 +435,7 @@ kubectl get nodes
 ### 8.3 — deploy: push, bootstrap the namespace, apply the apps
 
 ArgoCD is pull-based, so push the chart first. Then create the release namespace and the Floci creds
-the per-workload SecretStores read (creds live in the SAME namespace — the lab stand-in for ROK's
+the per-workload SecretStores read (creds live in the SAME namespace — the lab stand-in for ROCK's
 IRSA), and apply the two apps that are live now (worker waits for Phase 9).
 
 ```bash
@@ -443,20 +443,20 @@ IRSA), and apply the two apps that are live now (worker waits for Phase 9).
 ```
 
 ```bash
-kubectl create namespace rok-development
-kubectl -n rok-development create secret generic floci-aws-creds \
+kubectl create namespace rock-development
+kubectl -n rock-development create secret generic floci-aws-creds \
   --from-literal=access-key-id=test --from-literal=secret-access-key=test
-kubectl apply -f k8s/argocd/applications/rok-frontend-development.yaml
-kubectl apply -f k8s/argocd/applications/rok-backend-development.yaml
+kubectl apply -f k8s/argocd/applications/rock-frontend-development.yaml
+kubectl apply -f k8s/argocd/applications/rock-backend-development.yaml
 ```
 Verify (ArgoCD auto-syncs in ~30–60s):
 ```bash
-kubectl get pods,svc,ingress,externalsecret,secretstore -n rok-development
+kubectl get pods,svc,ingress,externalsecret,secretstore -n rock-development
 curl -s http://localhost:30080/api/hello; echo
 ```
-Result: frontend + backend pods `1/1 Running` in `rok-development`; **images pulled from
+Result: frontend + backend pods `1/1 Running` in `rock-development`; **images pulled from
 `192.168.122.1:5000` by the kubelet (Phase 7 proven via GitOps, no manual pull)**; per-workload
-SecretStores `Valid`, ExternalSecrets `SecretSynced`; `rok-backend-secret` carries the synced keys; the
+SecretStores `Valid`, ExternalSecrets `SecretSynced`; `rock-backend-secret` carries the synced keys; the
 curl (via the socat bridge → Traefik NodePort 30080 → host-less Ingress → ClusterIP → pod) returns the
 JSON with the injected `SECRET_MESSAGE`.
 **Gotcha:** ArgoCD health stays `Progressing` forever because Traefik doesn't populate
@@ -465,13 +465,13 @@ desired: set Traefik `providers.kubernetesIngress.ingressEndpoint` so it writes 
 
 ---
 
-## Phase 9.1 — in-cluster mailpit (test mail sink), the ROK way
+## Phase 9.1 — in-cluster mailpit (test mail sink), the ROCK way
 
-ROK runs **mailpit** in-cluster as a throwaway mail sink for lower envs — no real email, no SES.
-It's installed exactly like ROK's other add-ons: the upstream `jouve/mailpit` Helm chart + a
-**values file** (`k8s/mailpit/values.yaml`, mirroring `rok-scaleout/manifests/values/mailpit_values.yaml`),
-into a dedicated `mailhog` namespace. Same chart/image ROK pins (chart `0.32.5`, image
-`axllent/mailpit:v1.29.6`) and the same security-context hardening; the lab drops only ROK's EBS PVC
+ROCK runs **mailpit** in-cluster as a throwaway mail sink for lower envs — no real email, no SES.
+It's installed exactly like ROCK's other add-ons: the upstream `jouve/mailpit` Helm chart + a
+**values file** (`k8s/mailpit/values.yaml`, mirroring `rock-scaleout/manifests/values/mailpit_values.yaml`),
+into a dedicated `mailhog` namespace. Same chart/image ROCK pins (chart `0.32.5`, image
+`axllent/mailpit:v1.29.6`) and the same security-context hardening; the lab drops only ROCK's EBS PVC
 (no storageClass here — ephemeral sink) and htpasswd auth (so the Phase-9.2 mailer sends plain SMTP).
 
 ```bash
@@ -487,7 +487,7 @@ persistence is off), and two ClusterIP services — `mailpit-http` (`:8025`, UI)
 
 ### 9.1a — expose the UI host-less on `/mailpit` (reuse `localhost`, no Windows hosts file)
 
-First attempt used a hostname Ingress (`mailpit.rok.local`) like ArgoCD — but Windows Chrome returned
+First attempt used a hostname Ingress (`mailpit.rock.local`) like ArgoCD — but Windows Chrome returned
 `DNS_PROBE_FINISHED_NXDOMAIN`: the browser can't resolve that name, and WSL2's `/etc/hosts` doesn't help
 a **Windows** browser (it reads `C:\Windows\System32\drivers\etc\hosts`). NXDOMAIN is a *resolution*
 failure — upstream of socat, which is why the frontend (`localhost:30080`) still worked fine.
@@ -511,19 +511,19 @@ hosts entry needed. Path: `browser → localhost:30080 (WSL2 mirrored) → socat
 
 ## Phase 9.2 — the `mailer` workload (frontend → SMTP → mailpit)
 
-A new **server workload** in the map-driven chart: `rok-mailer`, a dependency-free Node service
+A new **server workload** in the map-driven chart: `rock-mailer`, a dependency-free Node service
 (`apps/mailer/server.js`) exposing `POST /api/email {to,subject,body}`. It opens a raw SMTP
 conversation (no auth/TLS) with the in-cluster mailpit sink and sends the message. `SMTP_HOST`/
-`SMTP_PORT` are **not hardcoded** — they come from `development-rok-general-secret` via ESO
+`SMTP_PORT` are **not hardcoded** — they come from `development-rock-general-secret` via ESO
 (`Smtp__Host`/`Smtp__Port`), the same config-from-Secrets-Manager pattern the backend uses.
 
 Chart wiring:
 - `workloads.mailer` in `values.yaml` ships `enabled: false` (like worker) so the frontend/backend
-  apps stay clean; image + `remoteKey: development-rok-general-secret` in `values-development.yaml`.
+  apps stay clean; image + `remoteKey: development-rock-general-secret` in `values-development.yaml`.
 - Ingress path `/api/email` — more specific than backend's `/api`, so Traefik routes them apart.
 - `secretEnv: {SMTP_HOST: Smtp__Host, SMTP_PORT: Smtp__Port}` — ESO's `dataFrom.extract` pulls every
-  key of the general secret into `rok-mailer-secret`; these two become env vars.
-- New ArgoCD app `k8s/argocd/applications/rok-mailer-development.yaml` (flips mailer on, disables the rest);
+  key of the general secret into `rock-mailer-secret`; these two become env vars.
+- New ArgoCD app `k8s/argocd/applications/rock-mailer-development.yaml` (flips mailer on, disables the rest);
   `mailer.enabled=false` added to the backend/frontend/worker apps for isolation.
 
 **Terraform change:** the general secret's `Smtp__Host` moved `mailpit` → **`mailpit-smtp.mailhog`**
@@ -531,10 +531,10 @@ Chart wiring:
 
 ```bash
 cd /home/jeffndegwa/rke2-aws-tf-cluster/apps/mailer
-docker build -t rok-mailer:v001 .
+docker build -t rock-mailer:v001 .
 
-docker tag rok-mailer:v001 localhost:5000/rok-mailer:v001
-docker push localhost:5000/rok-mailer:v001
+docker tag rock-mailer:v001 localhost:5000/rock-mailer:v001
+docker push localhost:5000/rock-mailer:v001
 
-kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/argocd/applications/rok-mailer-development.yaml
+kubectl apply -f /home/jeffndegwa/rke2-aws-tf-cluster/k8s/argocd/applications/rock-mailer-development.yaml
 ```

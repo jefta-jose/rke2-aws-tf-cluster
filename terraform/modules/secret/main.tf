@@ -1,4 +1,4 @@
-# Mirrors rok-scaleout secret module: "<env>-<project>-<app>-secret".
+# Mirrors rock-scaleout secret module: "<env>-<project>-<app>-secret".
 resource "aws_secretsmanager_secret" "secret" {
   name                           = "${var.environment}-${var.project}-${var.application}-secret"
   force_overwrite_replica_secret = false

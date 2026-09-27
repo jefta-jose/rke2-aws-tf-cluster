@@ -1,4 +1,4 @@
-# rok-app — map-driven workloads chart
+# rock-app — map-driven workloads chart
 
 One Helm chart that renders **all** the lab's Kubernetes workloads from a single
 `workloads:` map. Adding a workload means adding a map entry — no new template files.
@@ -39,20 +39,20 @@ Services/Ingresses have no wave (order-independent).
 | `Chart.yaml` | chart metadata + version |
 | `values.yaml` | **shape** — every workload's structure and defaults (env-agnostic) |
 | `values-development.yaml` | **per-env overlay** — image repositories + Secrets Manager `remoteKey` only |
-| `templates/_helpers.tpl` | shared labels (`rok-app.labels`) |
+| `templates/_helpers.tpl` | shared labels (`rock-app.labels`) |
 | `templates/deployments.yaml` | one Deployment per enabled workload |
 | `templates/services.yaml` | ClusterIP Service per workload with `service.enabled` |
 | `templates/ingress.yaml` | one host-less Ingress **per** workload with `ingress.enabled` |
 | `templates/external-secrets.yaml` | ExternalSecret per workload that declares a `secretName` |
 | `templates/secret-stores.yaml` | SecretStore per such workload (+ lab-only auth block) |
 
-## Secrets: lab vs. real ROK
+## Secrets: lab vs. real ROCK
 
-Real ROK's SecretStore has **no `auth` block** — the ESO controller authenticates to AWS
+Real ROCK's SecretStore has **no `auth` block** — the ESO controller authenticates to AWS
 through the node's IAM role (IRSA), secretless. Floci has no IAM identity, so
 `secretStoreAuth.enabled: true` renders an `auth.secretRef` pointing at a `floci-aws-creds`
 Secret **in the release namespace** (bootstrapped by hand, never in git). Set
-`secretStoreAuth.enabled: false` and it renders the real-ROK (IRSA) shape.
+`secretStoreAuth.enabled: false` and it renders the real-ROCK (IRSA) shape.
 
 The Secret's *contents* come from AWS/Floci Secrets Manager: `externalSecret.remoteKey` is
 the Secrets Manager key, `dataFrom.extract` pulls all its keys into the k8s Secret, and
@@ -60,9 +60,9 @@ the Secrets Manager key, `dataFrom.extract` pulls all its keys into the k8s Secr
 
 ## ArgoCD: one Application per workload
 
-`k8s/argocd/applications/rok-<workload>-development.yaml` — each Application points at **this same chart**
+`k8s/argocd/applications/rock-<workload>-development.yaml` — each Application points at **this same chart**
 but enables only its own workload via `helm.parameters` (`workloads.X.enabled=false` for the
-others). So each app owns exactly one workload's resources, in namespace `rok-development`.
+others). So each app owns exactly one workload's resources, in namespace `rock-development`.
 This mirrors becklar's per-workload apps and keeps blast radius small (sync/rollback one
 workload at a time).
 
@@ -84,12 +84,12 @@ No template changes required for any of the above.
 ## How to add a new environment (e.g. production)
 
 Create `values-production.yaml` (same shape as `values-development.yaml`, prod image repos +
-`remoteKey`s) and a matching set of `k8s/argocd/applications/rok-<workload>-production.yaml` Applications
-that reference `values-production.yaml` and a `rok-production` namespace.
+`remoteKey`s) and a matching set of `k8s/argocd/applications/rock-<workload>-production.yaml` Applications
+that reference `values-production.yaml` and a `rock-production` namespace.
 
 ## Lab-specific notes
 
 - **Images** come from the local registry `192.168.122.1:5000` (Phase 7), not ECR.
 - **Ingress is host-less** because Floci's ALB rewrites the `Host` header (Phase 8.4);
-  Traefik routes purely by path. Real ROK keys Ingress on a hostname.
+  Traefik routes purely by path. Real ROCK keys Ingress on a hostname.
 - Reaching the app locally: `http://localhost:30080/` via the `socat` bridge (Phase 8.5).

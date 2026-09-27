@@ -1,6 +1,6 @@
 apiVersion: v2
-name: rok-app
-description: ROK-lab workloads (frontend, backend, SQS worker) with external secrets — map-driven chart
+name: rock-app
+description: ROCK-lab workloads (frontend, backend, SQS worker) with external secrets — map-driven chart
 type: application
 version: 0.2.0
 appVersion: "1.0.0"
