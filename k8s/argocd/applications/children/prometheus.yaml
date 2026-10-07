@@ -53,8 +53,11 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 192Mi }
             limits: { memory: 512Mi }
+        # extraManifests items must be STRINGS: the chart renders each via `tpl` (a map errors with
+        # "wrong type for value; expected string"). Block scalar below. No {{ }} inside, so tpl is a no-op.
         extraManifests:
-          - apiVersion: networking.k8s.io/v1
+          - |
+            apiVersion: networking.k8s.io/v1
             kind: Ingress
             metadata:
               name: prometheus
