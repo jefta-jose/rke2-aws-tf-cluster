@@ -1,0 +1,30 @@
+# The app-of-apps ROOT (PLAN Phase 6.2). We kubectl-apply this ONCE to bootstrap; after that it is
+# self-managing — ArgoCD watches k8s/argocd/applications/children/ in git and creates/prunes a child
+# Application for every manifest we commit there. This is the only Application we ever apply by hand.
+#
+# Destination is in-cluster/argocd because Application CRs must live in the argocd namespace of the
+# cluster ArgoCD runs on. The child apps target the EXTERNAL `nimbus` cluster (6444) themselves.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nimbus-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
+    targetRevision: main
+    path: k8s/argocd/applications/children
+    directory:
+      recurse: true   # pick up nested child manifests too
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true      # deleting a child manifest from git removes the Application
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

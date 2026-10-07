@@ -384,3 +384,65 @@ Gotchas: use **`--plaintext --grpc-web`** (plain HTTP + gRPC-over-HTTP/1.1 throu
 CLI still prints a one-time TLS cert warning (`valid for *.traefik.default, not localhost`) before
 falling through to plaintext — **cosmetic**, answer `y`; the path is plain HTTP end to end. (CLI v3.5
 vs server v2.12 skew is fine for login/cluster-add.)
+
+### 6.2 — app-of-apps (DEFERRED to Phase 7/9)
+
+ArgoCD syncs from a **Git repo**; the project is now a git repo pushed to
+`git@github.com:jefta-jose/rke2-aws-tf-cluster.git` (branch `main`). The app-of-apps + Applications
+are created when we have workloads to put in them (monitoring in Phase 7, apps in Phase 9), targeting
+the **external `nimbus` cluster** (see 6.3) so the fragile credential is actually exercised.
+
+### 6.3 — register the cluster the FRAGILE way (the Phase 11 time bomb)
+
+The control-plane "NLB": the WSL host already runs its OWN kube-apiserver on `:6443` (a local
+Docker/Rancher Desktop k8s), so our stable API endpoint uses host port **6444** → server-1:6443,
+added to `scripts/socat-bridge.sh`. Endpoint `https://192.168.122.1:6444` is reachable from host AND
+in-cluster pods (gateway IP), and TLS-valid (`192.168.122.1` is in `tls-san`).
+
+```bash
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh   # now also binds :6444 [NLB]
+
+# verify endpoint reachable + TLS-valid (401 = apiserver answering, needs auth)
+export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
+CA=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d)
+curl -s -o /dev/null -w "%{http_code}\n" --cacert <(printf '%s' "$CA") https://192.168.122.1:6444/livez --max-time 5   # 401
+
+# register THIS cluster as EXTERNAL via the NLB endpoint (creates argocd-manager SA + CRB + long-lived token)
+cp /tmp/nimbus-kubeconfig.yaml /tmp/nimbus-nlb-kubeconfig.yaml
+sed -i 's#https://192.168.122.11:6443#https://192.168.122.1:6444#' /tmp/nimbus-nlb-kubeconfig.yaml
+KUBECONFIG=/tmp/nimbus-nlb-kubeconfig.yaml argocd cluster add "$(KUBECONFIG=/tmp/nimbus-nlb-kubeconfig.yaml kubectl config current-context)" --name nimbus --yes
+```
+
+`argocd cluster add` creates in `kube-system`: SA `argocd-manager`, ClusterRole/Binding
+`argocd-manager-role[-binding]`, and secret **`argocd-manager-long-lived-token`** (a non-expiring SA
+token — this is the Phase 11.5 FIX, kept ready). It stores the cluster with that bearer token.
+
+**Then convert the credential to the admin client cert** — the deliberate 1-year time bomb. ROK's real
+cluster secret uses `tlsClientConfig.certData` (admin leaf), which is what expires in the incident.
+
+```bash
+SEC=$(kubectl -n argocd get secret -l argocd.argoproj.io/secret-type=cluster -o jsonpath='{.items[0].metadata.name}')
+CA=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+CERT=$(kubectl config view --raw -o jsonpath='{.users[0].user.client-certificate-data}')
+KEY=$(kubectl config view --raw -o jsonpath='{.users[0].user.client-key-data}')
+PATCH=$(CA="$CA" CERT="$CERT" KEY="$KEY" python3 -c '
+import os, json
+config = json.dumps({"tlsClientConfig": {"caData": os.environ["CA"], "certData": os.environ["CERT"], "keyData": os.environ["KEY"]}})
+print(json.dumps({"stringData": {"config": config}}))')
+kubectl -n argocd patch secret "$SEC" --type merge -p "$PATCH"
+kubectl -n argocd rollout restart statefulset argocd-application-controller
+
+# verify + record the fuse
+kubectl -n argocd get secret "$SEC" -o jsonpath='{.data.config}' | base64 -d | python3 -m json.tool  # tlsClientConfig.certData, NO bearerToken
+kubectl config view --raw -o jsonpath='{.users[0].user.client-certificate-data}' | base64 -d | openssl x509 -noout -subject -enddate
+```
+
+Result: cluster secret `config` now has `tlsClientConfig.{caData,certData,keyData}`, no `bearerToken`.
+**Admin cert `O=system:masters, CN=system:admin`, `notAfter = Oct 7 2027`** = the fuse (Phase 11's
++400-day jump blows past it). `argocd cluster list` shows both `nimbus` (6444) and `in-cluster` as
+`Unknown` = "no applications / not monitored" — **normal**, not an error; ArgoCD only health-checks a
+cluster once an Application targets it. The credential is valid *now*; it dies in Phase 11, and 11.5
+reverts `config` to the `argocd-manager-long-lived-token` (which never expires).
+
+**Carry-forward:** Phase 9 Applications must set `destination.server: https://192.168.122.1:6444`
+(the `nimbus` external cluster), NOT `in-cluster`, or the time bomb never bites.
