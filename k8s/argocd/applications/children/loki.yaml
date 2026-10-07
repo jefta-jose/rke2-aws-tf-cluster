@@ -1,0 +1,58 @@
+# Loki + Promtail (in-cluster), managed by ArgoCD. PLAN Phase 7.2.
+#
+# chart: grafana/loki-stack 2.10.3 (Loki 2.9.3 single-binary + Promtail DaemonSet). Deprecated chart,
+# chosen deliberately: it IS "Loki single-binary (filesystem) + a collector DaemonSet" with almost no
+# knobs, vs the current grafana/loki chart whose SingleBinary mode needs memcached caches / gateway /
+# canary / strict schema disabled to fit a tiny node. Fine for a cert-expiry lab.
+#
+# - Loki: filesystem storage, persistence off (emptyDir — RKE2 has no default StorageClass), tiny.
+# - Promtail: DaemonSet with a blanket toleration so it ALSO collects logs from the tainted servers
+#   (we want etcd/kube-proxy/canal errors visible in Phase 11). loki-stack auto-points it at the loki svc.
+# - Grafana/Prometheus subcharts OFF (Grafana runs on the host in Phase 8; Prometheus is its own app).
+#
+# Exposure (host-less Ingress on the Traefik `loki` entrypoint) is a separate child app
+# (monitoring-ingress) sourcing k8s/monitoring/ingress/. Destination = nimbus external cluster (6444).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: loki
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: loki-stack
+    targetRevision: 2.10.3
+    helm:
+      releaseName: loki
+      valuesObject:
+        loki:
+          enabled: true
+          persistence:
+            enabled: false
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+        promtail:
+          enabled: true
+          tolerations:
+            - operator: Exists          # collect logs from the tainted servers too
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 192Mi }
+        grafana:
+          enabled: false
+        prometheus:
+          enabled: false
+  destination:
+    server: https://192.168.122.1:6444
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

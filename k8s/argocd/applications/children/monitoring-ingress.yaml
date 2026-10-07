@@ -1,0 +1,26 @@
+# Raw host-less Ingresses for the monitoring stack (currently Loki). A plain git-directory
+# Application — syncs every manifest under k8s/monitoring/ingress/ to the nimbus cluster, ns monitoring.
+# Kept separate from the Helm charts so the "ingress glue" is explicit and uses our known-good
+# host-less Ingress pattern (same as argocd/prometheus) instead of each chart's ingress quirks.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring-ingress
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
+    targetRevision: main
+    path: k8s/monitoring/ingress
+  destination:
+    server: https://192.168.122.1:6444
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -446,3 +446,52 @@ reverts `config` to the `argocd-manager-long-lived-token` (which never expires).
 
 **Carry-forward:** Phase 9 Applications must set `destination.server: https://192.168.122.1:6444`
 (the `nimbus` external cluster), NOT `in-cluster`, or the time bomb never bites.
+
+---
+
+## Phase 7 — observability in-cluster (GitOps via ArgoCD app-of-apps)
+
+Route chosen: **GitOps**. ArgoCD (public repo, no creds) owns monitoring via an app-of-apps. The agent
+had ~2.2 GB free, so Prometheus/Loki are tuned tiny.
+
+### 7.0 — app-of-apps root (the deferred 6.2)
+
+`k8s/argocd/applications/root.yaml` = Application `nimbus-root`: watches `.../children/` in git
+(recurse), destination in-cluster/argocd (where Application CRs must live), automated+prune+selfHeal.
+Bootstrap ONCE by hand; self-managing after (commit a child manifest -> ArgoCD creates the app).
+
+```bash
+# push first (ArgoCD reads GitHub, not local files), then the one-time apply:
+git add k8s/ && git commit -m "..." && git push
+export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
+kubectl apply -f k8s/argocd/applications/root.yaml
+argocd app get nimbus-root     # Synced/Healthy, empty (children/ has only .gitkeep)
+```
+
+(The `metadata.finalizers: resources-finalizer.argocd.argoproj.io` warning is cosmetic — it's
+ArgoCD's standard cascade-delete finalizer; newer k8s just wants a `/path` suffix.)
+
+### 7.1 — Prometheus child app (tiny)
+
+`k8s/argocd/applications/children/prometheus.yaml` = Application: chart
+`prometheus-community/prometheus` **29.36.0** (Prometheus v3.15.0), destination the **nimbus** external
+cluster (6444), ns `monitoring`. Values: alertmanager + pushgateway off; server emptyDir + 6h retention
+(RKE2 has no default StorageClass); node-exporter `tolerations: [{operator: Exists}]` so it runs on the
+tainted servers too; host-less Ingress on the Traefik `prometheus` entrypoint via `extraManifests`.
+
+Workflow: edit child manifest -> `git push` -> `argocd app get prometheus --refresh`.
+
+Result: `monitoring` has `prometheus-server` (2/2: server + config-reload), `kube-state-metrics`,
+and `node-exporter` on **all 4 nodes**. Reachable through the ALB (`curl localhost:9090/-/healthy` ->
+`Prometheus Server is Healthy.`), **20/20 active targets up**
+(`curl -s localhost:9090/api/v1/targets?state=active`).
+
+Gotchas:
+- **`extraManifests` items must be STRINGS**, not YAML maps — the chart renders each via `tpl`. A map
+  gives `wrong type for value; expected string; got map`. Use a `|` block scalar.
+- **kube-state-metrics `Failed to contact API server for /livez: got 0`** warnings + a few early
+  restarts (exit 2) are a benign, over-sensitive self-check (short-timeout API ping via kube-proxy to a
+  loaded server); it stops restarting once things settle, and Prometheus (same node) scrapes the API
+  fine (20/20 up). Only relax its probe if restarts recur under load.
+- A brief startup blip (Prometheus' first scrape pass) momentarily disrupted argocd/9069 + prometheus/
+  9090 through the ALB; it self-recovered. Watch for it when adding more load.
