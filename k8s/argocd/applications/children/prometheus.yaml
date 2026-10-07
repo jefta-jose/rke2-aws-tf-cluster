@@ -1,0 +1,84 @@
+# Prometheus (in-cluster), managed by ArgoCD via the app-of-apps. PLAN Phase 7.1 + 7.3.
+#
+# chart: prometheus-community/prometheus 29.36.0 (Prometheus v3.15.0), tuned TINY for the 3.5 GB agent:
+#   - server only, emptyDir storage (RKE2 ships no default StorageClass), 6h retention
+#   - alertmanager + pushgateway DISABLED (not needed; Grafana runs on the host in Phase 8)
+#   - node-exporter tolerates ALL taints so it also runs on the tainted servers (node metrics)
+#   - default scrape config kept: it honors prometheus.io/scrape pod/endpoint annotations, which is
+#     how our Phase 9 apps (and the annotated Traefik svc) get picked up — no ServiceMonitor needed.
+#
+# Exposed host-less through the Traefik `prometheus` entrypoint (NodePort 30002 -> socat
+# localhost:9090) via an Ingress carried in the chart's extraManifests.
+#
+# Destination = the EXTERNAL `nimbus` cluster (https://192.168.122.1:6444), so management rides the
+# fragile admin cert (Phase 6.3) and breaks in Phase 11. Requires the socat NLB to be up.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: prometheus
+    targetRevision: 29.36.0
+    helm:
+      releaseName: prometheus
+      valuesObject:
+        alertmanager:
+          enabled: false
+        prometheus-pushgateway:
+          enabled: false
+        kube-state-metrics:
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+        prometheus-node-exporter:
+          # run on every node, including the tainted control-plane/etcd servers
+          tolerations:
+            - operator: Exists
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 64Mi }
+        server:
+          retention: "6h"
+          persistentVolume:
+            enabled: false        # emptyDir — no StorageClass on RKE2; 6h fits easily
+          global:
+            scrape_interval: 30s
+            scrape_timeout: 10s
+          resources:
+            requests: { cpu: 50m, memory: 192Mi }
+            limits: { memory: 512Mi }
+        extraManifests:
+          - apiVersion: networking.k8s.io/v1
+            kind: Ingress
+            metadata:
+              name: prometheus
+              annotations:
+                traefik.ingress.kubernetes.io/router.entrypoints: prometheus
+            spec:
+              ingressClassName: traefik
+              rules:
+                - http:
+                    paths:
+                      - path: /
+                        pathType: Prefix
+                        backend:
+                          service:
+                            name: prometheus-server
+                            port:
+                              number: 80
+  destination:
+    server: https://192.168.122.1:6444
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
