@@ -1,0 +1,131 @@
+# k8s/traefik/helmchartconfig.yaml
+#
+# Reshape RKE2's PACKAGED Traefik (chart "rke2-traefik") into the ROK ingress config.
+#
+# RKE2 ships Traefik v3 as a managed HelmChart in kube-system; its helm-controller watches for a
+# HelmChartConfig of the SAME name/namespace and re-runs the chart install with these values deep-
+# merged on top of the packaged defaults. So we don't install a second Traefik — we re-shape the
+# one RKE2 already runs. (This is the RKE2-native equivalent of ROK's standalone
+# `helm upgrade traefik -f traefik_values.yml`; our values mirror rok-scaleout/manifests/values/
+# traefik_values.yml, minus ROK-only bits.)
+#
+# Lab adaptations vs the ROK file (each noted inline):
+#   * service.type: NodePort        -- ROK leaves this commented (AWS gives it a LoadBalancer via the
+#                                      cloud-controller); we have no cloud LB, the socat "ALB" forwards
+#                                      to NodePorts, so NodePort is REQUIRED. THE key adaptation.
+#   * dropped entrypoints mobile(30006) / becklareventsim(30007) -- real ROK apps, out of Nimbus scope.
+#   * mailhog/mailhog-smtp renamed  -> mailpit/mailpit-smtp (PLAN names; mailpit is the tool). Ports
+#                                      (30004/30005) unchanged. ROK itself now runs mailpit too.
+#   * dropped the correlation-id Middleware/plugin -- ROK-specific Traefik plugin, out of scope.
+#   * globalArguments intentionally NOT set -- Helm REPLACES lists (no merge), so overriding it would
+#                                      drop the chart's own default flags. ROK's single ingressendpoint
+#                                      flag only matters for the kubernetesIngress provider; we route
+#                                      with IngressRoute CRDs, so we leave the chart defaults intact.
+#
+# Entrypoint -> NodePort -> socat "ALB" host port (PLAN.md table):
+#   web        30001  localhost:8080     loki     30000  localhost:3100
+#   prometheus 30002  localhost:9090     argocd   30003  localhost:9069
+#   mailpit    30004  localhost:8025     mailpit-smtp 30005 localhost:1025
+#
+# For NEW entrypoints `port` is the container port Traefik binds (we keep ROK's "pretty" numbers,
+# all >1024 so the non-root hardened image can bind them). For the built-in `web` we only pin its
+# nodePort and leave the chart's default container port (:8000) alone (80 would need privilege).
+# socat targets the NodePort, so the Service port value is irrelevant to the "ALB" wiring.
+#
+# Apply:  kubectl apply -f k8s/traefik/helmchartconfig.yaml
+# Watch:  kubectl -n kube-system get pods -l job-name=helm-install-rke2-traefik -w
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    # --- expose on the agent's NodePorts (socat ALB -> these) ---
+    # NOTE: in the Traefik chart v40 (what RKE2 ships) the service type lives at
+    # service.spec.type, NOT service.type as in ROK's older traefik_values.yml. Setting the
+    # old key silently no-ops -> Service stays ClusterIP and rejects the nodePorts.
+    service:
+      spec:
+        type: NodePort       # deep-merges over the chart default {type: ClusterIP, ipFamilyPolicy: ...}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+
+    # --- named entrypoint per service, mirroring traefik_values.yml ports: ---
+    ports:
+      web:
+        nodePort: 30001          # keep chart default container :8000; just pin the NodePort
+      loki:
+        port: 3100
+        expose:
+          default: true
+        nodePort: 30000
+        protocol: TCP
+      prometheus:
+        port: 9090
+        expose:
+          default: true
+        nodePort: 30002
+        protocol: TCP
+      argocd:
+        port: 9069
+        expose:
+          default: true
+        nodePort: 30003
+        protocol: TCP
+      mailpit:
+        port: 8025
+        expose:
+          default: true
+        nodePort: 30004
+        protocol: TCP
+      mailpit-smtp:
+        port: 1025
+        expose:
+          default: true
+        nodePort: 30005
+        protocol: TCP          # raw TCP; routed later with an IngressRouteTCP (Phase 9.4, optional)
+
+    # --- logs: quiet general log + JSON access log, dropping credential fields (ROK) ---
+    logs:
+      general:
+        level: ERROR
+      access:
+        enabled: true
+        format: json
+        fields:
+          defaultmode: keep
+          names:
+            ClientUsername: drop
+            ClientPassword: drop
+          headers:
+            defaultmode: keep
+
+    # --- Prometheus metrics on the built-in `metrics` entrypoint (ROK buckets + labels) ---
+    metrics:
+      prometheus:
+        enabled: true
+        entryPoint: metrics
+        addEntryPointsLabels: true
+        addRoutersLabels: true
+        addServicesLabels: true
+        buckets: "0.5,1.0,2.5"
+
+    # --- dashboard + API (internal `traefik` entrypoint only, not NodePort-exposed) ---
+    api:
+      insecure: false
+      dashboard: true
+    ingressRoute:
+      dashboard:
+        enabled: true
+        matchRule: PathPrefix(`/dashboard`) || PathPrefix(`/api`)
+        entryPoints: ["traefik"]
+
+    # --- Traefik is the default ingress controller; /ping healthcheck on ---
+    ingressClass:
+      enabled: true
+      isDefaultClass: true
+    ping:
+      enabled: true

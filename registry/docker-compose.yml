@@ -1,0 +1,19 @@
+# Nimbus host-local image registry — our ECR stand-in (PLAN Phase 1).
+# Runs on the WSL2 host and binds 0.0.0.0:5000 so the VMs can reach it at the
+# libvirt gateway address 192.168.122.1:5000 (plain HTTP, insecure — fine on the
+# isolated lab network). Nodes will trust it later via vms/registries.yaml.
+# Image data persists in a named volume so a `down` (without -v) keeps pushes.
+services:
+  registry:
+    image: registry:2
+    container_name: nimbus-registry
+    restart: unless-stopped
+    ports:
+      - "5000:5000"            # host 0.0.0.0:5000 -> container :5000  (VMs hit 192.168.122.1:5000)
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"   # allow DELETE so we can prune tags during the lab
+    volumes:
+      - nimbus-registry-data:/var/lib/registry
+
+volumes:
+  nimbus-registry-data:

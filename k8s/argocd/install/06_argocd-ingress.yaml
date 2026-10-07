@@ -1,0 +1,27 @@
+# Expose the ArgoCD UI/API through the Traefik `argocd` entrypoint (NodePort 30003 -> socat
+# localhost:9069). Routed to the `argocd` entrypoint via Traefik's router.entrypoints annotation.
+# Based on rok-scaleout/manifests/ingress/06_argocd.yaml.
+#
+# Lab note: ROK uses the now-deprecated `kubernetes.io/ingress.class: traefik` annotation; we use the
+# modern `spec.ingressClassName: traefik` FIELD instead (what the kubectl deprecation warning asks
+# for). Same effect, no warning. Traefik is also the default IngressClass, so this is belt-and-braces.
+# The browser UI and `argocd login --grpc-web --plaintext` both work over this plain-HTTP path.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: argocd
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: argocd
+spec:
+  ingressClassName: traefik
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: argocd-server
+            port:
+              number: 9069

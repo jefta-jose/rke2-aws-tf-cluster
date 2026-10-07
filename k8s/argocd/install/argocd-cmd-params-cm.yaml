@@ -1,0 +1,19 @@
+# Run argocd-server in INSECURE mode (serve plain HTTP on :8080, no self-signed TLS).
+#
+# Required for Nimbus: we reach ArgoCD as  socat localhost:9069 -> agent:30003 -> Traefik `argocd`
+# entrypoint -> argocd-server Service :9069 -> pod :8080, all plain HTTP (socat is a dumb TCP
+# forward, no TLS). This mirrors ROK's real path, where the ALB terminates HTTPS and forwards plain
+# HTTP to the Traefik argocd nodePort — so argocd-server runs behind the LB without its own TLS.
+#
+# This ConfigMap already exists (empty) in the upstream install manifest; applying this merges the
+# key in. argocd-server must be restarted to pick it up.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmd-params-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-cmd-params-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  server.insecure: "true"

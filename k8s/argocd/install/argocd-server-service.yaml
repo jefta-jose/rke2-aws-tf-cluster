@@ -1,0 +1,25 @@
+# Remap the argocd-server Service to port 9069 (ROK's exact change).
+#
+# Upstream install.yaml creates argocd-server with ports http(80) and https(443) -> targetPort 8080.
+# ROK replaces that with a single http port 9069 -> targetPort 8080, so the Traefik `argocd`
+# entrypoint (which forwards to Service port 9069, per k8s/traefik + the ROK Ingress) lands on it.
+# Applying this over the installed Service updates its ports in place (same name/selector).
+#
+# Mirrors rok-scaleout/manifests/argocd.yaml's argocd-server Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: argocd-server
+  namespace: argocd
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+spec:
+  ports:
+  - name: http
+    port: 9069
+    protocol: TCP
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/name: argocd-server

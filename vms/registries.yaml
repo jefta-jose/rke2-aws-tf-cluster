@@ -1,0 +1,9 @@
+# RKE2 registry config (PLAN Phase 3) — trust the host-local registry over plain HTTP.
+# Copied to /etc/rancher/rke2/registries.yaml on nodes that pull our app images (the agent).
+# 192.168.122.1 = libvirt gateway = the WSL2 host running registry:2 on :5000.
+# An http:// endpoint tells containerd to use HTTP (no TLS) for this registry — fine on the
+# isolated lab net. Images are referenced in manifests as 192.168.122.1:5000/nimbus/<name>.
+mirrors:
+  "192.168.122.1:5000":
+    endpoint:
+      - "http://192.168.122.1:5000"
