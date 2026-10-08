@@ -12,7 +12,7 @@ set -euo pipefail
 NODE_NAME=${1:?node-name}
 NODE_IP=${2:?node-ip}
 SERVER_IP=${3:?server-ip}
-TOKEN=${TOKEN:-nimbus-etcd-ha-lab-token-2026}
+TOKEN=${TOKEN:-nimbus-lab-token-2026}
 
 install -d -m 0755 /etc/rancher/rke2
 

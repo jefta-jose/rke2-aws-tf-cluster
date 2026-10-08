@@ -1,16 +1,26 @@
-# Nimbus — RKE2 learning lab (modeled on ROK): 3-server etcd HA + observability + the cert-expiry incident
+# Nimbus — RKE2 learning lab (modeled on ROK): single-server control plane + observability + the cert-expiry incident
 
 > **Naming:** our lab is **Nimbus**; everything we create is prefixed `nimbus-*`. "ROK" / "rok-scaleout"
 > references throughout are pointers to the *real* platform we study at
 > `/home/jeffndegwa/TheRokInfrastructure` — read-only study sources, not names we reuse.
+
+> **SCOPE CHANGE (2026-10-08):** 4 VMs (3 servers + 1 agent) overcommitted the WSL host, so the lab
+> was nuked and rebuilt as **1 server + 1 agent** (the fallback this PLAN already anticipated). This
+> **drops the etcd-HA goal** (no quorum, leader election, or Phase 11 etcd split-brain). Everything
+> else — the ROK ingress shape, observability, and the full cert-expiry incident on a single node —
+> stays. Sections below are updated to the 2-VM topology; `commands.md` Phases 0–7 are the (now
+> historical) 4-VM build, kept as a record. The rebuild drops the server-2/3 steps and gives the agent
+> the freed RAM.
 
 ## Context & goal
 The v1 lab proved the hard part: **real RKE2 in libvirt/QEMU VMs on WSL2 works**, and the agent-join
 that crashed in Docker is clean when each node owns its kernel. We keep that foundation (libvirt +
 QEMU + a socat bridge) and rebuild around three new learning goals:
 
-1. **Real etcd HA** — 3 RKE2 server nodes so there is an actual quorum, a leader, and elections to
-   watch (v1 had one server, so etcd was invisible — see the git history discussion).
+1. ~~**Real etcd HA** — 3 RKE2 server nodes…~~ **DROPPED (2026-10-08, resource limits).** We run a
+   **single** server, so embedded etcd is a 1-member cluster (quorum 1, no elections/split-brain). We
+   still *inspect* etcd (member list, endpoint status/health) — it's just not HA. The cert-expiry
+   incident (goal below) still fully applies to the single node.
 2. **The ROK ingress shape, faithfully** — `socat` plays the part of the AWS **ALB**, and **Traefik**
    is configured with the same **named-entrypoint-per-service** pattern as the real
    `rok-scaleout/manifests/values/traefik_values.yml`. The ALB→Traefik contract from
@@ -40,31 +50,28 @@ and fix it with the real runbook — including the **etcd split-brain** a single
   (The directory name is now a slight misnomer — no AWS/TF — rename later if you like; keeping it
   preserves git history.)
 
-## Resource budget — WSL2 is `memory=12GB, swap=4GB, processors=10, nestedVirtualization=true`
-RAM is the hard limit; vCPU overcommits fine. The plan: **lean, dedicated etcd/control-plane servers;
-one bigger agent that carries every workload.**
+## Resource budget — WSL2 measured at `memory=16GB, swap=4GB, processors=20, nestedVirtualization=true`
+RAM is the hard limit; vCPU overcommits fine, but **too many VMs hung the host** (why we cut to 2).
+The plan: **one lean control-plane server; one big agent that carries every workload.**
 
 | VM | Role | vCPU | RAM | Notes |
 |---|---|---|---|---|
-| `nimbus-server-1` | etcd + control-plane (cluster-init) | 2 | 2 GB | tainted `CriticalAddonsOnly=true:NoExecute` |
-| `nimbus-server-2` | etcd + control-plane (join) | 2 | 2 GB | tainted |
-| `nimbus-server-3` | etcd + control-plane (join) | 2 | 2 GB | tainted |
-| `nimbus-agent-1` | workloads | 2 | 3.5 GB | Traefik, ArgoCD, Prometheus, Loki, mailpit, apps |
-| **VMs total** | | **8** | **9.5 GB** | |
-| Host headroom | WSL2 + registry:2 + host Grafana + socat | 2 | ~2.5 GB | |
+| `nimbus-server-1` | etcd + control-plane (cluster-init) | 2 | 3 GB | tainted `CriticalAddonsOnly=true:NoExecute` |
+| `nimbus-agent-1` | workloads | 4 | 6 GB | Traefik, ArgoCD, Prometheus, Loki, mailpit, apps |
+| **VMs total** | | **6** | **9 GB** | down from 8 vCPU / 9.5 GB across 4 VMs |
+| Host headroom | WSL2 + registry:2 + host Grafana + socat | — | ~7 GB | |
 
-**Why taint the servers** (ROK does *not* taint its big EC2 control-planes): at 2 GB a server can't
-safely host Prometheus next to etcd without risking an OOM that would wreck the very etcd lesson we're
-here for. Tainting keeps all workloads on the agent and the control plane healthy. We note this as a
-deliberate lab adaptation. Prometheus still *scrapes* the servers over the network — pods don't need
-to run there.
+(3 GB server: at 2 GB the four core static pods request ~1920Mi and canal can't schedule → `NotReady`;
+see commands.md Phase 2. The agent gets the RAM freed by dropping the two extra servers.)
 
-> If 2 GB servers prove too tight once everything's up, the fallback is **1 server + ROK-style
-> no-taint** (loses the etcd-HA lesson) or dropping Loki. We'll measure before deciding.
+**Why still taint the single server** (ROK does *not* taint its big EC2 control-planes): keep every
+workload on the agent so the control plane / etcd stays healthy and predictable. Prometheus still
+*scrapes* the server over the network — pods don't need to run there. (Applied via kubectl **after**
+the agent exists; tainting at bootstrap blocks the helm-install jobs → no CNI → NotReady.)
 
 ## The mental model
 ```
-WSL2 host (12 GB / 10 vCPU / 4 GB swap)
+WSL2 host (16 GB / 20 vCPU / 4 GB swap)
 ┌──────────────────────────────────────────────────────────────────────┐
 │  OUTSIDE the cluster (host-side)                                       │
 │    registry:2 :5000              Grafana :3000                         │
@@ -75,16 +82,17 @@ WSL2 host (12 GB / 10 vCPU / 4 GB swap)
 │                        host:9069→30003 (ArgoCD)                        │
 │                        host:8080→30001 (web / apps)                    │
 │                        host:8025→30004 (mailpit UI)                    │
+│    socat = "the NLB"   host:6444→server:6443 (kube-apiserver, ArgoCD)  │
 └──────┬───────────────────────────────────────────────┬───────────────┘
        │ libvirt default net (host = 192.168.122.1)     │ forwards to agent NodePorts
-  ┌──────┴──────┐ ┌─────────────┐ ┌─────────────┐  ┌──────┴──────────────┐
-  │nimbus-server│ │nimbus-server│ │nimbus-server│  │    nimbus-agent-1    │
-  │     -1      │◀▶│    -2      │◀▶│    -3      │  │  Traefik (entrypts), │
-  │  etcd+cp    │ │  etcd+cp    │ │  etcd+cp    │  │  ArgoCD, Prometheus, │
-  │  2 GB       │ │  2 GB       │ │  2 GB       │  │  Loki, mailpit, apps │
-  │  tainted    │ │  tainted    │ │  tainted    │  │  3.5 GB              │
-  └─────────────┘ └─────────────┘ └─────────────┘  └─────────────────────┘
-        etcd quorum = 2 of 3           VMs pull images from 192.168.122.1:5000
+  ┌──────┴──────────────┐                          ┌──────┴──────────────┐
+  │   nimbus-server-1    │                          │    nimbus-agent-1    │
+  │   etcd + cp          │◀────────────────────────▶│  Traefik (entrypts), │
+  │   (cluster-init)     │   libvirt default net    │  ArgoCD, Prometheus, │
+  │   3 GB, tainted      │                          │  Loki, mailpit, apps │
+  │   etcd = 1 member    │                          │  6 GB                │
+  └─────────────────────┘                          └─────────────────────┘
+     (no HA — single member)        VMs pull images from 192.168.122.1:5000
 ```
 
 ## The ALB → Traefik mapping (our socat ⇄ rok's `alb.tf` + `traefik_values.yml`)
@@ -142,8 +150,7 @@ apps/
   `genisoimage`, `kubectl`, `helm`, `docker` present.
 - 0.3 Reorganize the repo to the structure above (git-rm `terraform/`, `k8s/external-secrets/`;
   rename `nimbus-*`/`rok-*`→`nimbus-*`). We'll do this as we build each phase, not all at once.
-- 0.4 Rewrite `NUKE.md` for the new topology (3 servers + 1 agent, registry + host-Grafana composes,
-  no Floci) — done at the end once names/ports are final.
+- 0.4 `NUKE.md` written for the 1-server + 1-agent topology (registry + host-Grafana composes, no Floci).
 → Learn: clean slate; the exact resource envelope we're fitting into.
 
 ### Phase 1 — Host-local registry (our ECR stand-in)
@@ -151,23 +158,21 @@ apps/
 - 1.2 `docker compose up -d`; verify a test push/pull to `localhost:5000`.
 → Learn: the registry the nodes + ArgoCD pull from, reachable at `192.168.122.1:5000` from VMs.
 
-### Phase 2 — Three RKE2 server VMs (real etcd quorum)
-- 2.1 `vms/nimbus-server-1/build.sh` (clone of v1's, 2 vCPU / 2 GB). Boot it.
+### Phase 2 — The RKE2 server VM (single control-plane + embedded etcd)
+- 2.1 `vms/make-vm.sh nimbus-server-1 … 2 3072 20`. Boot it.
 - 2.2 Install RKE2 server on `nimbus-server-1` with **`cluster-init: true`**, shared `token`, `tls-san`
-  (all three server IPs + `nimbus-server` + host), `node-taint: CriticalAddonsOnly=true:NoExecute`.
-- 2.3 Boot `nimbus-server-2` and `nimbus-server-3`; install RKE2 server with `server:
-  https://<server-1-ip>:9345`, same token, same taint, unique `node-ip`/`node-name`.
-- 2.4 Pull kubeconfig to the host (point it at a server IP); `kubectl get nodes` → **3 `control-plane,etcd`
-  Ready**.
-- 2.5 **Inspect etcd** (this is the lesson v1 skipped): `rke2 etcd-snapshot save`, then via `crictl` +
-  `etcdctl` — `member list -w table`, `endpoint status --cluster -w table` (see IS LEADER / RAFT INDEX),
-  `endpoint health --cluster`.
-→ Learn: embedded etcd, `cluster-init` vs join, the 9345 registration port, quorum = 2 of 3, who's leader.
+  (server IP + `192.168.122.1` host + `nimbus-server`). **No join steps** — it's the only server.
+- 2.4 Pull kubeconfig to the host (point it at the server IP); `kubectl get nodes` → **1 `control-plane,etcd`
+  Ready** (the taint is applied in Phase 3, after the agent exists).
+- 2.5 **Inspect etcd** (single member): `rke2 etcd-snapshot save`, then via `scripts/etcdctl.sh` —
+  `member list -w table`, `endpoint status -w table`, `endpoint health`. One voting member, quorum 1.
+→ Learn: embedded etcd, `cluster-init`, the 9345 registration port, the kubeconfig TLS-SAN rewrite.
+  (The multi-member quorum/leader/split-brain lesson is out of scope since the 2026-10-08 downsize.)
 
 ### Phase 3 — RKE2 agent VM (the workload node) + registry trust
-- 3.1 `vms/nimbus-agent-1/build.sh` (2 vCPU / 3.5 GB). Boot and join as agent
-  (`server: https://<server-1-ip>:9345`, token, unique node-ip/name). `kubectl get nodes` → **4 nodes**
-  (3 cp + 1 worker Ready).
+- 3.1 `vms/make-vm.sh nimbus-agent-1 … 4 6144 40`. Boot and join as agent
+  (`server: https://<server-1-ip>:9345`, token, unique node-ip/name). `kubectl get nodes` → **2 nodes**
+  (1 cp + 1 worker Ready).
 - 3.2 `vms/registries.yaml` on every node → mirror/endpoint `http://192.168.122.1:5000` (insecure OK on
   the lab net). Confirm a node can pull a test image.
 → Learn: agent join at scale, scheduling onto the one untainted node, pulling from the host registry.
@@ -251,8 +256,8 @@ Pure `kubectl get` — no changes.
   EndpointSlices, kube-proxy, CNI — all by reading it with `kubectl get`.
 
 ### Phase 11 — Day-2: simulate the certificate-expiry incident (the payoff)
-Recreate the 30 Sep–1 Oct 2026 outage in the lab. With **3 servers** we can finally reproduce the
-**etcd split-brain**, not just the single-node cert break.
+Recreate the 30 Sep–1 Oct 2026 outage in the lab. (Single-server: we reproduce the node cert break +
+the silent kube-proxy + the ArgoCD cluster-cred expiry — **not** the multi-member etcd split-brain.)
 - 11.1 **Baseline**: on every VM, inspect leaf cert expiry
   (`openssl x509 -enddate` over the `tls/`, `tls/etcd/`, `agent/*.crt` files — use `sudo sh -c` for the
   glob), decode the Calico CNI token `exp` in `/etc/cni/net.d/calico-kubeconfig`, note the kubeconfig
@@ -263,11 +268,12 @@ Recreate the 30 Sep–1 Oct 2026 outage in the lab. With **3 servers** we can fi
 - 11.3 **Observe the real symptoms** in our cluster: `kubectl` → "must be logged in"; nodes `NotReady`;
   the **silent kube-proxy** `Unauthorized` (node `Ready` but Service routing frozen — now you'll see the
   Endpoints/EndpointSlices from Phase 10 stop updating); canal `FailedKillPod ... Unauthorized`;
-  **the expired etcd leader blocking renewed members**; ArgoCD `ComparisonError`.
-- 11.4 **Fix with the runbook, scaled to the lab**: snapshot → rotate control-plane **one at a time,
-  leader first, keep 2/3 quorum** (`systemctl stop rke2-server` → `rke2-killall.sh` →
-  `rke2 certificate rotate` → `systemctl start rke2-server`) → **then** `systemctl restart rke2-agent`
-  → delete stale canal pods → refresh the host kubeconfig.
+  ArgoCD `ComparisonError`.
+- 11.4 **Fix with the runbook, scaled to the lab**: snapshot → rotate the single control-plane
+  (`systemctl stop rke2-server` → `rke2-killall.sh` → `rke2 certificate rotate` →
+  `systemctl start rke2-server`) → **then** `systemctl restart rke2-agent` → delete stale canal pods
+  → refresh the host kubeconfig. (With one server there's a brief full control-plane outage during the
+  rotate — expected; a multi-server lab would rotate one-at-a-time to keep quorum.)
 - 11.5 **Fix ArgoCD the right way — switch cluster credential cert → ServiceAccount.** Rotating the
   node certs does *not* heal ArgoCD: its cluster secret still holds the now-expired admin `certData`
   (Phase 6.3), so apps stay `ComparisonError`. Replace that `certData` config with the **long-lived
@@ -276,17 +282,17 @@ Recreate the 30 Sep–1 Oct 2026 outage in the lab. With **3 servers** we can fi
   application-controller, and watch apps leave `Unknown`. (If apps are `automated`, pause auto-sync
   first, review the diff, then restore — same caution as the runbook.) That token doesn't expire, so
   this never recurs.
-- 11.6 **Verify**: all certs ~1 year out, nodes Ready, etcd healthy with a leader, every kube-proxy
+- 11.6 **Verify**: all certs ~1 year out, both nodes Ready, etcd healthy, every kube-proxy
   `Unauthorized` count 0, Endpoints/EndpointSlices updating again, apps Synced, host Grafana still
   reading through the ALB, and the ArgoCD cluster secret now using `bearerToken` (no cert to expire).
-→ Learn: the incident first-hand — *including* the etcd leader/quorum failure a 1-server lab can't show,
-  and the cert→ServiceAccount switch that makes ArgoCD's cluster credential permanent.
+→ Learn: the incident first-hand on a single node, and the cert→ServiceAccount switch that makes
+  ArgoCD's cluster credential permanent.
 
 ---
 
 ## Verification checkpoints
-- Phase 2: `kubectl get nodes` → 3 `control-plane,etcd` Ready; `etcdctl endpoint status` shows one leader.
-- Phase 3: 4 nodes Ready; a pod schedules only onto `nimbus-agent-1`; a test image pulls from the host registry.
+- Phase 2: `kubectl get nodes` → 1 `control-plane,etcd` Ready; `etcdctl member list` shows 1 member.
+- Phase 3: 2 nodes Ready; a pod schedules only onto `nimbus-agent-1`; a test image pulls from the host registry.
 - Phase 5: each Traefik entrypoint NodePort is listening; socat forwards reach it.
 - Phase 8: host Grafana shows live cluster + etcd metrics, pulled through `localhost:9090`/`:3100`.
 - Phase 9: frontend reachable at `localhost:8080`, calls the 3 services, and their `/metrics` appear in
@@ -296,6 +302,7 @@ Recreate the 30 Sep–1 Oct 2026 outage in the lab. With **3 servers** we can fi
 - Phase 11: expiry reproduced (all documented symptoms seen), then fully recovered via the runbook.
 
 ## Cleanup
-Rewritten in `NUKE.md` at the end: `virsh destroy/undefine` the 4 VMs (VMs first, libvirt `default`
-network last); `docker compose down -v` for `registry/` and `host-grafana/`; `pkill -f socat`; remove
-the host kubeconfig. **KEEP** the Ubuntu base image for fast rebuilds.
+See **`NUKE.md`**: stop socat + remove host kubeconfigs; `virsh destroy/undefine` the 2 VMs and their
+disks; `docker compose down` for `registry/` (and `host-grafana/` once it exists). **KEEP** the Ubuntu
+base image for fast rebuilds. (NUKE.md also has a "partial downsize" section for removing extra
+servers without a full teardown.)

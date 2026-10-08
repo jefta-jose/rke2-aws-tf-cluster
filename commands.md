@@ -495,3 +495,26 @@ Gotchas:
   fine (20/20 up). Only relax its probe if restarts recur under load.
 - A brief startup blip (Prometheus' first scrape pass) momentarily disrupted argocd/9069 + prometheus/
   9090 through the ALB; it self-recovered. Watch for it when adding more load.
+
+---
+
+## SCOPE CHANGE — nuked, rebuilding as 1 server + 1 agent (2026-10-08)
+
+4 VMs (3 servers + 1 agent, 8 vCPU / 9.5 GB) overcommitted the WSL host (machine hanging), so the lab
+was **fully nuked** (`NUKE.md`) and is being rebuilt as **1 server + 1 agent**. PLAN.md updated
+(topology, resource table, diagram, Phases 2/3/11). The etcd-HA / split-brain lesson is dropped; the
+cert-expiry incident still applies on the single node.
+
+**Everything above (Phases 0–7) is the historical 4-VM build — kept as the rebuild recipe.** Tomorrow's
+rebuild reuses it with these deltas:
+- **New sizing:** `make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 2 3072 20` and
+  `make-vm.sh nimbus-agent-1 192.168.122.21 52:54:00:a1:b1:21 4 6144 40`. **Skip server-2/3** (§2.3).
+- `scripts/taint-servers.sh` still taints only `nimbus-server-1` (edit the loop, or it no-ops on the
+  missing nodes). etcd is 1 member (quorum 1) — §2.5 inspection still works.
+- Everything from Phase 3 on (agent join, socat ALB+NLB, Traefik HelmChartConfig override, ArgoCD +
+  the fragile cluster cert, app-of-apps root, Prometheus + Loki children) is **unchanged** — the k8s/
+  manifests and scripts are already in git, so after the cluster + ArgoCD + root are back, the GitOps
+  apps re-sync themselves.
+- registry:2 was left running through the nuke (one pushed image kept).
+
+Rebuild starts at Phase 1/2 tomorrow.

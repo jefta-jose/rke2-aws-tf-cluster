@@ -5,8 +5,6 @@
 #
 #   VM               MAC                  IP
 #   nimbus-server-1  52:54:00:a1:b1:11    192.168.122.11
-#   nimbus-server-2  52:54:00:a1:b1:12    192.168.122.12
-#   nimbus-server-3  52:54:00:a1:b1:13    192.168.122.13
 #   nimbus-agent-1   52:54:00:a1:b1:21    192.168.122.21
 set -euo pipefail
 URI=qemu:///system
@@ -24,8 +22,6 @@ add_res() {
 }
 
 add_res 52:54:00:a1:b1:11 nimbus-server-1 192.168.122.11
-add_res 52:54:00:a1:b1:12 nimbus-server-2 192.168.122.12
-add_res 52:54:00:a1:b1:13 nimbus-server-3 192.168.122.13
 add_res 52:54:00:a1:b1:21 nimbus-agent-1  192.168.122.21
 
 echo "---- current reservations ----"

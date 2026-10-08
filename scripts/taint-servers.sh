@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Taint the 3 Nimbus servers so NO workloads land on the 3 GB control-plane/etcd nodes
+# Taint the Nimbus server so NO workloads land on the 3 GB control-plane/etcd node
 # (PLAN lab-adaptation). Run ONLY after nimbus-agent-1 exists to catch the workloads.
 # Run on the WSL host with KUBECONFIG set (or on a server node).
 #
@@ -12,7 +12,7 @@
 # (unlike a register-time node-taint, which only applies at first registration).
 set -euo pipefail
 
-for n in nimbus-server-1 nimbus-server-2 nimbus-server-3; do
+for n in nimbus-server-1; do
   kubectl taint node "$n" CriticalAddonsOnly=true:NoExecute --overwrite
 done
 
