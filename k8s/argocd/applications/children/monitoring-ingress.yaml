@@ -1,7 +1,9 @@
-# Raw host-less Ingresses for the monitoring stack (currently Loki). A plain git-directory
-# Application — syncs every manifest under k8s/monitoring/ingress/ to the nimbus cluster, ns monitoring.
-# Kept separate from the Helm charts so the "ingress glue" is explicit and uses our known-good
-# host-less Ingress pattern (same as argocd/prometheus) instead of each chart's ingress quirks.
+# Raw host-less Ingresses for the monitoring stack (Loki + Prometheus). A plain git-directory
+# Application — syncs every manifest under k8s/monitoring/ingress/ to the in-cluster cluster, ns monitoring.
+# CONVENTION: Helm chart apps render ONLY their workload; the Traefik Ingress that exposes each service
+# lives here as a plain manifest, so all the "ingress glue" is in one place with one known-good host-less
+# pattern (entrypoint + path, no Host header) instead of each chart's ingress quirks. Add a service's
+# entrypoint by dropping its Ingress YAML into k8s/monitoring/ingress/ — this app picks it up.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

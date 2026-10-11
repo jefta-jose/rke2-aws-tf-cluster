@@ -323,7 +323,7 @@ export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
 cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster
 
 kubectl create namespace argocd
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.12.3/manifests/install.yaml
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 kubectl -n argocd rollout status deploy/argocd-server --timeout=360s
 
 kubectl apply -f k8s/argocd/install/argocd-cmd-params-cm.yaml

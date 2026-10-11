@@ -8,7 +8,8 @@
 #     how our Phase 9 apps (and the annotated Traefik svc) get picked up — no ServiceMonitor needed.
 #
 # Exposed host-less through the Traefik `prometheus` entrypoint (NodePort 30002 -> socat
-# localhost:9090) via an Ingress carried in the chart's extraManifests.
+# localhost:9090) via a plain Ingress in k8s/monitoring/ingress/ (synced by the monitoring-ingress
+# app) — NOT the chart, so every monitoring Ingress lives in one place.
 #
 # Destination = the in-cluster cluster (https://kubernetes.default.svc) — ArgoCD manages the cluster
 # it runs on via its default in-cluster ServiceAccount.
@@ -53,28 +54,6 @@ spec:
           resources:
             requests: { cpu: 50m, memory: 192Mi }
             limits: { memory: 512Mi }
-        # extraManifests items must be STRINGS: the chart renders each via `tpl` (a map errors with
-        # "wrong type for value; expected string"). Block scalar below. No {{ }} inside, so tpl is a no-op.
-        extraManifests:
-          - |
-            apiVersion: networking.k8s.io/v1
-            kind: Ingress
-            metadata:
-              name: prometheus
-              annotations:
-                traefik.ingress.kubernetes.io/router.entrypoints: prometheus
-            spec:
-              ingressClassName: traefik
-              rules:
-                - http:
-                    paths:
-                      - path: /
-                        pathType: Prefix
-                        backend:
-                          service:
-                            name: prometheus-server
-                            port:
-                              number: 80
   destination:
     server: https://kubernetes.default.svc
     namespace: monitoring

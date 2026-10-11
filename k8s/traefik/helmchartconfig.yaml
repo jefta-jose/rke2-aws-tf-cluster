@@ -17,9 +17,15 @@
 #                                      (30004/30005) unchanged.
 #   * dropped the correlation-id Middleware/plugin -- app-specific Traefik plugin, out of scope.
 #   * globalArguments intentionally NOT set -- Helm REPLACES lists (no merge), so overriding it would
-#                                      drop the chart's own default flags. The single ingressendpoint
-#                                      flag only matters for the kubernetesIngress provider; we route
-#                                      with IngressRoute CRDs, so we leave the chart defaults intact.
+#                                      drop the chart's own default flags. (The optional ingressEndpoint
+#                                      flag only writes the cosmetic Ingress loadBalancer status, which
+#                                      we don't need.)
+#
+# Routing: services are exposed with plain Kubernetes `Ingress` objects (the chart's kubernetesIngress
+# provider, enabled by default), each bound to its entrypoint via the annotation
+# `traefik.ingress.kubernetes.io/router.entrypoints: <name>` + `ingressClassName: traefik`
+# (see k8s/monitoring/ingress/*.yaml and k8s/argocd/install/06_argocd-ingress.yaml). The ONLY
+# IngressRoute CRD is Traefik's own dashboard, below.
 #
 # Entrypoint -> NodePort -> socat "ALB" host port (PLAN.md table):
 #   web        30001  localhost:8080     loki     30000  localhost:3100
@@ -52,7 +58,7 @@ spec:
         prometheus.io/port: "9100"
         prometheus.io/path: "/metrics"
 
-    # --- named entrypoint per service, mirroring traefik_values.yml ports: ---
+    # --- named entrypoint per service (one entrypoint = one NodePort = one socat host port) ---
     ports:
       web:
         nodePort: 30001          # keep chart default container :8000; just pin the NodePort
