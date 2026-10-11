@@ -1,5 +1,5 @@
 # Host-less Ingress exposing Loki through the Traefik `loki` entrypoint (NodePort 30000 -> socat
-# localhost:3100). This IS ROK's ALB :3100 listener. Synced by the monitoring-ingress child app.
+# localhost:3100). This IS the AWS ALB :3100 listener. Synced by the monitoring-ingress child app.
 # Service "loki" :3100 is created by the loki-stack release (releaseName: loki) in this namespace.
 apiVersion: networking.k8s.io/v1
 kind: Ingress

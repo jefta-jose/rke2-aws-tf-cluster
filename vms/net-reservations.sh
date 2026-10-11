@@ -6,6 +6,7 @@
 #   VM               MAC                  IP
 #   nimbus-server-1  52:54:00:a1:b1:11    192.168.122.11
 #   nimbus-agent-1   52:54:00:a1:b1:21    192.168.122.21
+#   nimbus-agent-2   52:54:00:a1:b1:22    192.168.122.22
 set -euo pipefail
 URI=qemu:///system
 NET=default
@@ -23,6 +24,7 @@ add_res() {
 
 add_res 52:54:00:a1:b1:11 nimbus-server-1 192.168.122.11
 add_res 52:54:00:a1:b1:21 nimbus-agent-1  192.168.122.21
+add_res 52:54:00:a1:b1:22 nimbus-agent-2  192.168.122.22
 
 echo "---- current reservations ----"
 virsh -c "$URI" net-dumpxml "$NET" | grep "host mac" || true

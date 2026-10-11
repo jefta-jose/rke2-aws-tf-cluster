@@ -6,7 +6,7 @@
 # Usage:
 #   vms/make-vm.sh <name> <ip> <mac> <vcpus> <ram_mb> <disk_gb>
 # Example:
-#   vms/make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 2 2048 20
+#   vms/make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 3 3072 20
 #
 # Notes:
 # - You must be in the `libvirt` group (virsh talks to qemu:///system without sudo).

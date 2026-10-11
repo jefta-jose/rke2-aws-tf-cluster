@@ -1,4 +1,4 @@
-# Commands Log — Nimbus RKE2 learning lab (3-server etcd HA + observability)
+# Commands Log — Nimbus RKE2 learning lab (1 server + 2 workers, observability + cert-expiry incident)
 
 Logs **only what WORKED**: the real command + a one-line note + the real result.
 Failed attempts are not logged (except a short "gotcha" note worth keeping).
@@ -23,30 +23,10 @@ seed ISO with `genisoimage`.
 ## Phase 1 — host-local registry (our ECR stand-in)
 
 ```bash
-cd registry && docker compose up -d          # registry:2 on 0.0.0.0:5000, named volume nimbus-registry-data
+cd registry && docker compose up -d
 
-curl -s http://localhost:5000/v2/            # -> {}  (registry HTTP API v2 alive)
+curl -s http://localhost:5000/v2/
 ```
-
-Round-trip test proving images persist in the registry (not just the local docker cache):
-
-```bash
-docker pull alpine:3.20
-
-docker tag alpine:3.20 localhost:5000/nimbus/alpine:test
-
-docker push localhost:5000/nimbus/alpine:test
-
-curl -s http://localhost:5000/v2/_catalog    # -> {"repositories":["nimbus/alpine"]}
-
-docker rmi localhost:5000/nimbus/alpine:test alpine:3.20
-
-docker pull localhost:5000/nimbus/alpine:test   # pulls back FROM the registry -> success
-```
-
-Result: registry up, push/catalog/pull-back all succeeded. VMs will reach it at
-`192.168.122.1:5000` (libvirt gateway) once they exist. Note: `docker push` warns it only
-pushed the single-platform (amd64) image — correct for our amd64 VMs.
 
 ---
 
@@ -58,18 +38,18 @@ Fixed MAC→IP reservations on the libvirt `default` net (run once):
 
 ```bash
 
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/net-reservations.sh   # server-1/2/3 -> .11/.12/.13, agent-1 -> .21
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/net-reservations.sh
 
 ```
 
-Build one VM from a qcow2 overlay of the kept base image + a NoCloud seed ISO:
+Build one VM from a qcow2 overlay of the kept base image + a NoCloud seed ISO. Usage:
+`make-vm.sh <name> <ip> <mac> <vcpus> <ram_mb> <disk_gb>` (prompts sudo for the images dir). Servers
+run at 3072 MB (2048 leaves no room for the CNI → NotReady; see 2.2); the agent at 3584 MB.
 
 ```bash
-# make-vm.sh <name> <ip> <mac> <vcpus> <ram_mb> <disk_gb>   (prompts sudo for the images dir)
-# SERVERS: 3072 MB (2048 leaves no room for the CNI -> NotReady; see 2.2). AGENT: 3584 MB.
 zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 2 3072 20
 
-virsh -c qemu:///system net-dhcp-leases default           # confirm the reserved lease
+virsh -c qemu:///system net-dhcp-leases default
 
 ssh -o StrictHostKeyChecking=accept-new ubuntu@192.168.122.11 'hostname; ip -4 -br a; nproc'
 ```
@@ -100,13 +80,10 @@ curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
 
 sudo systemctl enable --now rke2-server.service
 
-# plain kubectl for the ubuntu user (symlink + user-owned kubeconfig, no sudo/flags/vars)
 sudo ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
 
 mkdir -p ~/.kube && sudo cp /etc/rancher/rke2/rke2.yaml ~/.kube/config \
   && sudo chown ubuntu:ubuntu ~/.kube/config && chmod 600 ~/.kube/config
-
-# wait for Ready
 
 kubectl get nodes -o wide
 ```
@@ -142,7 +119,6 @@ scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-server
 
 ssh ubuntu@192.168.122.12
 
-# --- on the VM: ---
 sudo bash /tmp/write-rke2-server-config.sh nimbus-server-2 192.168.122.12 192.168.122.11
 
 curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
@@ -167,12 +143,11 @@ Result: `nimbus-server-2` joined, **2 `control-plane,etcd` nodes Ready** (~3m30s
 ### 2.5 — inspect the etcd quorum
 
 ```bash
-# snapshot (baseline for Phase 11), then inspect — run on any server node
 ssh ubuntu@192.168.122.11
 
-sudo rke2 etcd-snapshot save --name phase2-baseline   # -> /var/lib/rancher/rke2/server/db/snapshots/
+sudo rke2 etcd-snapshot save --name phase2-baseline
 
-sudo rke2 etcd-snapshot list                          # (ignore 'Unknown flag ... skipping' warnings)
+sudo rke2 etcd-snapshot list
 ```
 
 etcd runs as a **distroless** static-pod container (no `sh`/`ls`, only `etcd`/`etcdctl`), and RKE2
@@ -186,7 +161,7 @@ scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/etcdctl.sh ubuntu
 ssh ubuntu@192.168.122.11
 
 sudo bash /tmp/etcdctl.sh member list -w table
-sudo bash /tmp/etcdctl.sh endpoint status --cluster -w table   # IS LEADER / RAFT TERM / RAFT INDEX
+sudo bash /tmp/etcdctl.sh endpoint status --cluster -w table
 sudo bash /tmp/etcdctl.sh endpoint health --cluster
 
 ```
@@ -214,7 +189,6 @@ Join in ONE ssh session — install uses `INSTALL_RKE2_TYPE=agent` (agent servic
 ```bash
 scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.21:/tmp/
 ssh ubuntu@192.168.122.21
-# --- on the VM: ---
 sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-1 192.168.122.21 192.168.122.11
 curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
 sudo systemctl enable --now rke2-agent.service
@@ -236,7 +210,7 @@ the node's kubeconfig only works on-node; the server IP is valid because it's in
 ### 3.2 — taint the servers (now safe: the agent exists to catch workloads)
 
 ```bash
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml    # if a fresh shell
+export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
 zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/taint-servers.sh
 kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
 ```
@@ -255,12 +229,12 @@ is keeping heavy add-ons (Traefik/Prometheus/Loki/apps) on the agent.
 ### 4.1 — bring up the multi-port "ALB"
 
 One `socat` forward per Traefik entrypoint: a "pretty" host port -> the matching NodePort on
-`nimbus-agent-1` (192.168.122.21) — ROK's `alb.tf` listener->target contract, socat as the ALB.
+`nimbus-agent-1` (192.168.122.21) — an AWS ALB listener->target contract, socat as the ALB.
 
 ```bash
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh   # start (idempotent)
-# zsh .../socat-bridge.sh stop                                                   # tear down
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh
 ```
+The start is idempotent; tear the forwards down with `zsh .../socat-bridge.sh stop`.
 
 Result: all six host ports LISTEN (`8080`/web->30001, `3100`/loki->30000, `9090`/prometheus->30002,
 `9069`/argocd->30003, `8025`/mailpit-ui->30004, `1025`/mailpit-smtp->30005). Notes:
@@ -268,7 +242,7 @@ Result: all six host ports LISTEN (`8080`/web->30001, `3100`/loki->30000, `9090`
   Traefik publishes those NodePorts (Phase 5) — expected. Phase 5.2 verifies they reach Traefik.
 - Idempotent restart matches `socat .*TCP:192.168.122.21:` so a re-run kills only this script's
   forwards, never an open ssh session to the agent. Per-service logs at `/tmp/nimbus-socat-*.log`.
-- The ArgoCD API forward (`localhost:6443 -> <server-ip>:6443`, ROK's control-plane NLB) is a
+- The ArgoCD API forward (`localhost:6443 -> <server-ip>:6443`, the control-plane NLB) is a
   *server*-targeted forward and comes in Phase 6.3 — not in this script yet.
 
 ### 4.2 — /etc/hosts
@@ -283,26 +257,25 @@ not Host headers), so no hosts entry is needed. Revisit if a host-based route ap
 RKE2 v1.36 **ships Traefik** as a packaged, helm-controller-managed chart (`rke2-traefik` +
 `rke2-traefik-crd` in kube-system) — image `rancher/hardened-traefik:v3.7.13`, chart = upstream
 Traefik Helm **v40.1.0** renamed. Out of the box it's a ClusterIP service with only `web`(80)/
-`websecure`(443). So Phase 5 is *reshaping the Traefik RKE2 already runs* into the ROK config —
-the RKE2-native equivalent of ROK's standalone `helm upgrade traefik -f traefik_values.yml`.
+`websecure`(443). So Phase 5 is *reshaping the Traefik RKE2 already runs* into our ALB-shaped config —
+the RKE2-native equivalent of a standalone `helm upgrade traefik -f <values>.yml`.
 
 ### 5.1 — override the packaged chart with a HelmChartConfig
 
 RKE2's helm-controller watches for a `HelmChartConfig` of the SAME name/namespace as a packaged
-chart and re-runs the install with its `valuesContent` deep-merged over the chart defaults. We mirror
-`rok-scaleout/manifests/values/traefik_values.yml` (named entrypoints, NodePort service, metrics,
-JSON access logs, dashboard), minus ROK-only bits (mobile/becklareventsim entrypoints, the
-correlation-id plugin). File: `k8s/traefik/helmchartconfig.yaml`.
+chart and re-runs the install with its `valuesContent` deep-merged over the chart defaults. Our values
+set named entrypoints, a NodePort service, metrics, JSON access logs, and the dashboard — minus any
+app-specific entrypoints or plugins we don't need. File: `k8s/traefik/helmchartconfig.yaml`.
 
 ```bash
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
 
 kubectl apply -f /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/k8s/traefik/helmchartconfig.yaml
 
-kubectl -n kube-system get pods -l job-name=helm-install-rke2-traefik -w   # wait for Completed
+kubectl -n kube-system get pods -l job-name=helm-install-rke2-traefik -w
 ```
 
-**Gotcha that cost one failed install — chart v40 moved the service type.** ROK's older values set
+**Gotcha that cost one failed install — chart v40 moved the service type.** Older Traefik values set
 `service.type: NodePort`; in Traefik chart v40 the type lives at **`service.spec.type`**. The old key
 silently no-ops, so the Service stayed ClusterIP while the per-entrypoint `nodePort`s applied → helm
 install failed: `spec.ports[*].nodePort: Forbidden ... when type is 'ClusterIP'`. The helm-install job
@@ -312,7 +285,7 @@ changes the configHash → fresh job uninstalls the failed release and reinstall
 `.data["rke2-traefik.tgz.base64"] | base64 -d | gunzip | tar x` → `values.yaml`.)
 
 Also note: do **not** set `globalArguments` in the override — Helm *replaces* lists (no merge), so it
-would wipe the chart's own default flags. We route with IngressRoute CRDs, so ROK's single
+would wipe the chart's own default flags. We route with IngressRoute CRDs, so the single
 `ingressendpoint.ip` flag (for the kubernetesIngress provider) isn't needed.
 
 ### 5.2 — verify
@@ -320,7 +293,6 @@ would wipe the chart's own default flags. We route with IngressRoute CRDs, so RO
 ```bash
 kubectl -n kube-system get svc rke2-traefik -o jsonpath='{.spec.type}{"\n"}{range .spec.ports[*]}{.name}{"\t"}{.port}{"\t->node:"}{.nodePort}{"\n"}{end}'
 kubectl -n kube-system get pod -l app.kubernetes.io/name=rke2-traefik -o wide
-# socat ALB reachability: an unmatched route must return Traefik's 404 (proof the full path works)
 for p in 8080 3100 9090 9069 8025; do echo -n "localhost:$p -> "; curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:$p/" --max-time 4; done
 ```
 
@@ -337,8 +309,8 @@ matches yet; backends come in Phases 6–9.)
 
 ### 6.1 — install ArgoCD + expose via the Traefik `argocd` entrypoint
 
-RKE2 ships nothing for ArgoCD, so we install upstream, **pinned to v2.12.3** (ROK's version). ROK's
-`argocd.yaml` is exactly this upstream manifest; we apply it from the pinned URL rather than vendoring
+RKE2 ships nothing for ArgoCD, so we install upstream, **pinned to v2.12.3**. That pinned
+`install.yaml` is the stock upstream manifest; we apply it from the pinned URL rather than vendoring
 the 1.2 MB blob, then layer three small customizations (`k8s/argocd/install/`):
 
 ```bash
@@ -347,36 +319,35 @@ cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster
 
 kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.12.3/manifests/install.yaml
-kubectl -n argocd rollout status deploy/argocd-server --timeout=360s   # all 7 pods land on the agent
+kubectl -n argocd rollout status deploy/argocd-server --timeout=360s
 
-# ROK customizations: insecure server + Service on 9069 + Ingress on the `argocd` entrypoint
-kubectl apply -f k8s/argocd/install/argocd-cmd-params-cm.yaml    # server.insecure: "true"
-kubectl apply -f k8s/argocd/install/argocd-server-service.yaml   # argocd-server Service: 9069 -> 8080
-kubectl apply -f k8s/argocd/install/06_argocd-ingress.yaml       # Ingress -> entrypoint argocd
-kubectl -n argocd rollout restart deploy/argocd-server           # pick up insecure
+kubectl apply -f k8s/argocd/install/argocd-cmd-params-cm.yaml
+kubectl apply -f k8s/argocd/install/argocd-server-service.yaml
+kubectl apply -f k8s/argocd/install/06_argocd-ingress.yaml
+kubectl -n argocd rollout restart deploy/argocd-server
 kubectl -n argocd rollout status deploy/argocd-server --timeout=180s
 ```
 
-Why these three (all mirror `rok-scaleout/manifests/`):
+Why these three:
 - **`server.insecure: "true"`** — the socat ALB is a dumb plain-TCP forward (no TLS), so argocd-server
-  must serve plain HTTP on :8080. Matches ROK, where the ALB terminates HTTPS and forwards plain HTTP
-  to the Traefik argocd nodePort.
-- **argocd-server Service port 9069 → targetPort 8080** — ROK's exact remap so the Traefik `argocd`
+  must serve plain HTTP on :8080. This mirrors the usual AWS setup, where the ALB terminates HTTPS and
+  forwards plain HTTP to the Traefik argocd nodePort.
+- **argocd-server Service port 9069 → targetPort 8080** — the remap so the Traefik `argocd`
   entrypoint (Service port 9069) reaches it.
-- **Ingress on entrypoint `argocd`** — ROK uses the deprecated `kubernetes.io/ingress.class` annotation;
-  we use the modern **`spec.ingressClassName: traefik`** field instead (clears the kubectl deprecation
+- **Ingress on entrypoint `argocd`** — rather than the deprecated `kubernetes.io/ingress.class` annotation,
+  we use the modern **`spec.ingressClassName: traefik`** field (clears the kubectl deprecation
   warning; Traefik is also the default class). The `traefik.ingress.kubernetes.io/router.entrypoints:
   argocd` annotation is what actually binds it to the entrypoint.
 
 Verify + log in through the ALB:
 
 ```bash
-kubectl -n argocd get svc argocd-server -o jsonpath='{range .spec.ports[*]}{.name}{" "}{.port}{" -> "}{.targetPort}{"\n"}{end}'   # http 9069 -> 8080
-curl -s -o /dev/null -w "argocd via ALB: %{http_code}\n" http://localhost:9069/ --max-time 5          # 200
+kubectl -n argocd get svc argocd-server -o jsonpath='{range .spec.ports[*]}{.name}{" "}{.port}{" -> "}{.targetPort}{"\n"}{end}'
+curl -s -o /dev/null -w "argocd via ALB: %{http_code}\n" http://localhost:9069/ --max-time 5
 
 PW=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d); echo "$PW"
 argocd login localhost:9069 --username admin --password "$PW" --plaintext --grpc-web
-argocd account get-user-info     # Logged In: true
+argocd account get-user-info
 ```
 
 Result: UI returns 200 over plain HTTP through socat→Traefik `argocd`→argocd-server; CLI login works.
@@ -400,14 +371,12 @@ added to `scripts/socat-bridge.sh`. Endpoint `https://192.168.122.1:6444` is rea
 in-cluster pods (gateway IP), and TLS-valid (`192.168.122.1` is in `tls-san`).
 
 ```bash
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh   # now also binds :6444 [NLB]
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh
 
-# verify endpoint reachable + TLS-valid (401 = apiserver answering, needs auth)
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
 CA=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d)
-curl -s -o /dev/null -w "%{http_code}\n" --cacert <(printf '%s' "$CA") https://192.168.122.1:6444/livez --max-time 5   # 401
+curl -s -o /dev/null -w "%{http_code}\n" --cacert <(printf '%s' "$CA") https://192.168.122.1:6444/livez --max-time 5
 
-# register THIS cluster as EXTERNAL via the NLB endpoint (creates argocd-manager SA + CRB + long-lived token)
 cp /tmp/nimbus-kubeconfig.yaml /tmp/nimbus-nlb-kubeconfig.yaml
 sed -i 's#https://192.168.122.11:6443#https://192.168.122.1:6444#' /tmp/nimbus-nlb-kubeconfig.yaml
 KUBECONFIG=/tmp/nimbus-nlb-kubeconfig.yaml argocd cluster add "$(KUBECONFIG=/tmp/nimbus-nlb-kubeconfig.yaml kubectl config current-context)" --name nimbus --yes
@@ -417,8 +386,8 @@ KUBECONFIG=/tmp/nimbus-nlb-kubeconfig.yaml argocd cluster add "$(KUBECONFIG=/tmp
 `argocd-manager-role[-binding]`, and secret **`argocd-manager-long-lived-token`** (a non-expiring SA
 token — this is the Phase 11.5 FIX, kept ready). It stores the cluster with that bearer token.
 
-**Then convert the credential to the admin client cert** — the deliberate 1-year time bomb. ROK's real
-cluster secret uses `tlsClientConfig.certData` (admin leaf), which is what expires in the incident.
+**Then convert the credential to the admin client cert** — the deliberate 1-year time bomb. A real
+production cluster secret uses `tlsClientConfig.certData` (admin leaf), which is what expires in the incident.
 
 ```bash
 SEC=$(kubectl -n argocd get secret -l argocd.argoproj.io/secret-type=cluster -o jsonpath='{.items[0].metadata.name}')
@@ -432,8 +401,7 @@ print(json.dumps({"stringData": {"config": config}}))')
 kubectl -n argocd patch secret "$SEC" --type merge -p "$PATCH"
 kubectl -n argocd rollout restart statefulset argocd-application-controller
 
-# verify + record the fuse
-kubectl -n argocd get secret "$SEC" -o jsonpath='{.data.config}' | base64 -d | python3 -m json.tool  # tlsClientConfig.certData, NO bearerToken
+kubectl -n argocd get secret "$SEC" -o jsonpath='{.data.config}' | base64 -d | python3 -m json.tool
 kubectl config view --raw -o jsonpath='{.users[0].user.client-certificate-data}' | base64 -d | openssl x509 -noout -subject -enddate
 ```
 
@@ -461,11 +429,10 @@ had ~2.2 GB free, so Prometheus/Loki are tuned tiny.
 Bootstrap ONCE by hand; self-managing after (commit a child manifest -> ArgoCD creates the app).
 
 ```bash
-# push first (ArgoCD reads GitHub, not local files), then the one-time apply:
 git add k8s/ && git commit -m "..." && git push
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
 kubectl apply -f k8s/argocd/applications/root.yaml
-argocd app get nimbus-root     # Synced/Healthy, empty (children/ has only .gitkeep)
+argocd app get nimbus-root
 ```
 
 (The `metadata.finalizers: resources-finalizer.argocd.argoproj.io` warning is cosmetic — it's
@@ -498,23 +465,246 @@ Gotchas:
 
 ---
 
-## SCOPE CHANGE — nuked, rebuilding as 1 server + 1 agent (2026-10-08)
+## SCOPE CHANGE — retopology to 3 VMs: 1 server + 2 workers (2026-10-11)
 
-4 VMs (3 servers + 1 agent, 8 vCPU / 9.5 GB) overcommitted the WSL host (machine hanging), so the lab
-was **fully nuked** (`NUKE.md`) and is being rebuilt as **1 server + 1 agent**. PLAN.md updated
-(topology, resource table, diagram, Phases 2/3/11). The etcd-HA / split-brain lesson is dropped; the
-cert-expiry incident still applies on the single node.
+The interim "1 server + 1 agent" plan is superseded. We now build **1 control-plane/etcd server +
+2 worker (agent) nodes = 3 VMs**. The second worker exists for one reason: to make **pod anti-affinity**
+real — you need ≥2 worker nodes to watch replicas land on distinct hosts (the Phase 9 learning goal
+below). etcd is still a **single member** (quorum 1, no HA / elections / split-brain); the cert-expiry
+incident still applies.
 
-**Everything above (Phases 0–7) is the historical 4-VM build — kept as the rebuild recipe.** Tomorrow's
-rebuild reuses it with these deltas:
-- **New sizing:** `make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 2 3072 20` and
-  `make-vm.sh nimbus-agent-1 192.168.122.21 52:54:00:a1:b1:21 4 6144 40`. **Skip server-2/3** (§2.3).
-- `scripts/taint-servers.sh` still taints only `nimbus-server-1` (edit the loop, or it no-ops on the
-  missing nodes). etcd is 1 member (quorum 1) — §2.5 inspection still works.
-- Everything from Phase 3 on (agent join, socat ALB+NLB, Traefik HelmChartConfig override, ArgoCD +
-  the fragile cluster cert, app-of-apps root, Prometheus + Loki children) is **unchanged** — the k8s/
-  manifests and scripts are already in git, so after the cluster + ArgoCD + root are back, the GitOps
-  apps re-sync themselves.
-- registry:2 was left running through the nuke (one pushed image kept).
+**Everything above (Phases 0–7) is the historical 4-VM build — kept as the recipe we reuse.** This
+section is the authoritative **current build** (the commands to run; no results logged until a step
+actually runs). Sizing is deliberately kept under the RAM ceiling that once hung the host:
 
-Rebuild starts at Phase 1/2 tomorrow.
+| VM | role | vCPU | RAM | disk |
+|---|---|---|---|---|
+| `nimbus-server-1` | control-plane + etcd (cluster-init), tainted | 3 | 3072 MB | 20 GB |
+| `nimbus-agent-1` | worker | 4 | 3584 MB | 30 GB |
+| `nimbus-agent-2` | worker | 4 | 3584 MB | 30 GB |
+
+Totals **11 vCPU / 10 GB RAM** on the measured 16 GB / 20 vCPU WSL2 host → ~6 GB headroom (~62% RAM,
+vs the ~79% that hung the host at the old 4-VM sizing). vCPU overcommits safely; RAM is the only hard
+limit, so this stays well clear of a hang. The stack now spreads across the two workers instead of
+piling onto one.
+
+### Build order (one VM at a time — build + join + verify before the next)
+
+Reserve the fixed IPs first (now including agent-2):
+
+```bash
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/net-reservations.sh
+```
+
+**server-1** (control-plane + etcd, cluster-init). Build, then install in one ssh session (Phase 2.2 recipe):
+
+```bash
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 3 3072 20
+
+scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-server-config.sh ubuntu@192.168.122.11:/tmp/
+ssh ubuntu@192.168.122.11
+```
+
+On the VM:
+
+```bash
+sudo bash /tmp/write-rke2-server-config.sh nimbus-server-1 192.168.122.11
+curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
+sudo systemctl enable --now rke2-server.service
+sudo ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+mkdir -p ~/.kube && sudo cp /etc/rancher/rke2/rke2.yaml ~/.kube/config \
+  && sudo chown ubuntu:ubuntu ~/.kube/config && chmod 600 ~/.kube/config
+kubectl get nodes -o wide
+```
+
+Expect 1 node `control-plane,etcd` Ready before moving on.
+
+**agent-1** (worker). Build, then join with `INSTALL_RKE2_TYPE=agent` (Phase 3.1 recipe):
+
+```bash
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-1 192.168.122.21 52:54:00:a1:b1:21 4 3584 30
+
+scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.21:/tmp/
+ssh ubuntu@192.168.122.21
+sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-1 192.168.122.21 192.168.122.11
+curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
+sudo systemctl enable --now rke2-agent.service
+```
+
+Expect 2 nodes Ready (1 `control-plane,etcd` + 1 worker).
+
+**agent-2** (second worker) — the identical join recipe with agent-2's name / IP / MAC:
+
+```bash
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-2 192.168.122.22 52:54:00:a1:b1:22 4 3584 30
+
+scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.22:/tmp/
+ssh ubuntu@192.168.122.22
+sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-2 192.168.122.22 192.168.122.11
+curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
+sudo systemctl enable --now rke2-agent.service
+```
+
+Expect **3 nodes Ready** — 1 `control-plane,etcd` + 2 workers.
+
+**Host (WSL) kubectl** — session-only, pointed at server-1:
+
+```bash
+scp ubuntu@192.168.122.11:.kube/config /tmp/nimbus-kubeconfig.yaml
+sed -i 's#https://127.0.0.1:6443#https://192.168.122.11:6443#' /tmp/nimbus-kubeconfig.yaml
+export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
+kubectl get nodes -o wide
+```
+
+### Taint the server LAST (ordering matters)
+
+Only after **both** workers are Ready, taint `nimbus-server-1` so no workloads land on the
+control-plane/etcd node:
+
+```bash
+export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/taint-servers.sh
+kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+```
+
+The order is the whole point: `CriticalAddonsOnly=true:NoExecute` applied at bootstrap (while a node is
+still bringing up its CNI) blocks the one-shot `helm-install-*` jobs — they don't tolerate the taint —
+so canal never installs and the node is `NotReady`. Applied here, at steady state with both workers
+already catching workloads, canal (DaemonSet, blanket tolerations) and kube-proxy (static pod) are not
+evicted, networking stays intact, and the taint lives in the node object in etcd (survives reboots).
+
+### Ingress still points at agent-1 — fine with two workers
+
+`scripts/socat-bridge.sh` keeps forwarding host ports to `nimbus-agent-1` (192.168.122.21). NodePorts
+are published on **every** node by kube-proxy, so `localhost:<port>` → socat → `agent-1:<nodePort>`
+reaches the Traefik pod even when the scheduler places Traefik on agent-2. No socat change is needed
+for the second worker.
+
+### GitOps stack re-syncs unchanged
+
+Once the cluster + ArgoCD + the app-of-apps `root` are back (Phases 5–7 above, unchanged), the Traefik
+HelmChartConfig override, the ArgoCD fragile cluster cert (6.3), and the Prometheus/Loki children
+re-sync themselves from git — the `k8s/` manifests already live in the repo. `registry:2` is left
+running across nukes (its pushed images persist).
+
+---
+
+## Phase 9 — app pods: resource management + pod (anti-)affinity (learning)
+
+The three-VM topology exists for this phase. We give the Phase 9 trio a worked example on
+**`service-a`** (scaled to `replicas: 2`) plus a tiny **`cache`** Deployment, to learn three scheduling
+controls. All of it is config layered into `charts/nimbus-app` and synced through ArgoCD.
+
+### 9.a — Resource requests & limits
+
+`requests` are the scheduling floor the kube-scheduler reserves on a node; a **CPU request does not cap
+CPU** (it only guarantees a share under contention). `limits.memory` is a hard cap — a container that
+exceeds it is **OOMKilled** and restarted. We leave CPU uncapped (a CPU limit throttles rather than
+kills, and throttling is easy to misdiagnose). Tiny-lab starting values (a production-scale service uses
+`cpu 250m / mem 1Gi` requests and a `6Gi` memory limit for a heavy report generator):
+
+```yaml
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+```
+
+### 9.b — Pod anti-affinity (why there are two workers)
+
+Spread the two `service-a` replicas onto different workers. **Preferred**, not required, so a rollout
+can never wedge:
+
+```yaml
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app: service-a
+```
+
+`preferred` is best-effort: with 2 workers and 2 replicas they split one-per-worker, but a third
+replica (or a surge-heavy rollout under `maxSurge`) is still allowed to co-locate rather than stall.
+**Required** (`requiredDuringSchedulingIgnoredDuringExecution`) would instead leave any replica beyond
+the node count stuck `Pending` — fine for strict separation, dangerous for rollouts on a 2-worker
+cluster.
+
+Scope note: this is **same-namespace** separation (all `service-a` replicas share one namespace).
+Separating two *namespaces* — e.g. `development` vs `staging` — is different:
+`topologySpreadConstraints` only count pods in the pod's own namespace, so cross-environment separation
+needs pod anti-affinity with an explicit `namespaces:` list or a `namespaceSelector:`. We demo only the
+same-namespace case here; the cross-namespace variant is described in `note.txt`.
+
+### 9.c — Pod affinity (co-locate the cache)
+
+Pull the `cache` pod onto whichever worker runs `service-a`:
+
+```yaml
+affinity:
+  podAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          topologyKey: kubernetes.io/hostname
+          labelSelector:
+            matchLabels:
+              app: service-a
+```
+
+(`nodeAffinity` is the cousin that pins to a specific node by label — the inverse of the
+`CriticalAddonsOnly` taint on the server, which *repels* pods instead.)
+
+### 9.d — The Helm caveat: values alone do nothing
+
+Adding `resources` / `affinity` to a values file has no effect unless the shared chart **template**
+renders them into the PodSpec. The Deployment template must carry something like:
+
+```yaml
+spec:
+  template:
+    spec:
+      {{- with .Values.serviceA.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: service-a
+          {{- with .Values.serviceA.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+```
+
+So each change touches **both** `charts/nimbus-app` values and its Deployment template. Render before
+deploying to confirm the fields actually land:
+
+```bash
+helm template charts/nimbus-app | kubectl apply --dry-run=client -f -
+```
+
+### 9.e — Verify placement
+
+```bash
+export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
+kubectl -n nimbus get pods -o wide -l app=service-a
+kubectl describe node nimbus-agent-1 | sed -n '/Allocated resources/,/Events/p'
+kubectl top pod -n nimbus
+kubectl -n nimbus scale deploy/service-a --replicas=3
+kubectl -n nimbus get pods -o wide -l app=service-a
+kubectl -n nimbus get pod -l app=cache -o wide
+```
+
+Expect the two `service-a` replicas on **different** workers; the `cache` pod on the **same** worker as
+a `service-a` replica; and the third replica (after scale-up) co-located on one of the two workers —
+`preferred` allows it, whereas `required` would leave it `Pending`. To see a memory limit bite, drive
+the app past its `limits.memory` and watch the container go `OOMKilled` with a rising restart count:
+
+```bash
+kubectl -n nimbus get pod -l app=service-a -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].lastState.terminated.reason}{"\t"}{.status.containerStatuses[0].restartCount}{"\n"}{end}'
+```

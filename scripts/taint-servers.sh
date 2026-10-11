@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Taint the Nimbus server so NO workloads land on the 3 GB control-plane/etcd node
-# (PLAN lab-adaptation). Run ONLY after nimbus-agent-1 exists to catch the workloads.
+# (PLAN lab-adaptation). Run ONLY after BOTH workers (nimbus-agent-1 AND nimbus-agent-2)
+# have joined and are Ready, so there are untainted nodes to catch the evicted/rescheduled workloads.
 # Run on the WSL host with KUBECONFIG set (or on a server node).
 #
 # Why not at bootstrap: CriticalAddonsOnly=true:NoExecute on a node still bringing up its

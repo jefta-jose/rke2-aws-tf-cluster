@@ -1,16 +1,15 @@
-# Nimbus — RKE2 learning lab (modeled on ROK): single-server control plane + observability + the cert-expiry incident
+# Nimbus — RKE2 learning lab: single-server control plane + two worker nodes + observability + the cert-expiry incident
 
-> **Naming:** our lab is **Nimbus**; everything we create is prefixed `nimbus-*`. "ROK" / "rok-scaleout"
-> references throughout are pointers to the *real* platform we study at
-> `/home/jeffndegwa/TheRokInfrastructure` — read-only study sources, not names we reuse.
+> **Naming:** our lab is **Nimbus**; everything we create is prefixed `nimbus-*`.
 
-> **SCOPE CHANGE (2026-10-08):** 4 VMs (3 servers + 1 agent) overcommitted the WSL host, so the lab
-> was nuked and rebuilt as **1 server + 1 agent** (the fallback this PLAN already anticipated). This
-> **drops the etcd-HA goal** (no quorum, leader election, or Phase 11 etcd split-brain). Everything
-> else — the ROK ingress shape, observability, and the full cert-expiry incident on a single node —
-> stays. Sections below are updated to the 2-VM topology; `commands.md` Phases 0–7 are the (now
-> historical) 4-VM build, kept as a record. The rebuild drops the server-2/3 steps and gives the agent
-> the freed RAM.
+> **SCOPE CHANGE (2026-10-11):** the lab is now **1 server + 2 workers (3 VMs)**. (History: the original
+> 4-VM 3-server-HA build overcommitted the host → nuked 2026-10-08 → interim 1 server + 1 agent; now
+> grown to a **second worker**.) The second worker exists to teach **pod anti-affinity** — spreading
+> replicas across distinct worker nodes needs ≥2 workers (Phase 9). This still **drops the etcd-HA goal**
+> (single server = 1-member etcd, no quorum/leader election/Phase 11 split-brain). Everything else — the
+> ingress shape, observability, and the full cert-expiry incident on a single node — stays. Sections
+> below are the 3-VM topology; `commands.md` Phases 0–7 are the (now historical) 4-VM build, kept as a
+> record.
 
 ## Context & goal
 The v1 lab proved the hard part: **real RKE2 in libvirt/QEMU VMs on WSL2 works**, and the agent-join
@@ -21,14 +20,13 @@ QEMU + a socat bridge) and rebuild around three new learning goals:
    **single** server, so embedded etcd is a 1-member cluster (quorum 1, no elections/split-brain). We
    still *inspect* etcd (member list, endpoint status/health) — it's just not HA. The cert-expiry
    incident (goal below) still fully applies to the single node.
-2. **The ROK ingress shape, faithfully** — `socat` plays the part of the AWS **ALB**, and **Traefik**
-   is configured with the same **named-entrypoint-per-service** pattern as the real
-   `rok-scaleout/manifests/values/traefik_values.yml`. The ALB→Traefik contract from
-   `rok-scaleout/lower-env/alb.tf` becomes socat(host "pretty" port) → Traefik NodePort.
-3. **Observability like ROK** — **Prometheus + Loki in-cluster**, and **Grafana running OUTSIDE the
-   cluster on the WSL2 host**, reading metrics/logs *through the socat "ALB"* — exactly how ROK's
-   `chief` cluster Grafana reads lower-env over the ALB (that is why `alb.tf` opens 9090/3100 only to
-   the chief Grafana CIDRs).
+2. **An AWS-ALB-shaped ingress** — `socat` plays the part of the AWS **ALB**, and **Traefik** is
+   configured with a **named-entrypoint-per-service** pattern. The ALB→Traefik contract is
+   socat(host "pretty" port) → Traefik NodePort.
+3. **Observability** — **Prometheus + Loki in-cluster**, and **Grafana running OUTSIDE the
+   cluster on the WSL2 host**, reading metrics/logs *through the socat "ALB"* — the pattern where an
+   external Grafana reads a cluster over the ALB (which is why the ALB only needs to expose 9090/3100
+   to the Grafana host).
 
 Then, once it all works, we **simulate the 1-year certificate-expiry incident** (30 Sep–1 Oct 2026)
 and fix it with the real runbook — including the **etcd split-brain** a single-server lab can never show.
@@ -39,7 +37,7 @@ and fix it with the real runbook — including the **etcd split-brain** a single
   work stays in git history if we ever want it back.)
 - **Workloads: a frontend + 3 small "metrics-first" services**, each exposing Prometheus `/metrics`,
   so Grafana has real dashboards to show.
-- Same working style and folder-structure *style* as v1 — **not** ROK's folder layout.
+- Same working style and folder-structure *style* as v1 — our own layout.
 
 ## How we work (unchanged from v1)
 - **You run every command; I never do.** For each step I explain *what* and *why*, hand you the exact
@@ -51,23 +49,30 @@ and fix it with the real runbook — including the **etcd split-brain** a single
   preserves git history.)
 
 ## Resource budget — WSL2 measured at `memory=16GB, swap=4GB, processors=20, nestedVirtualization=true`
-RAM is the hard limit; vCPU overcommits fine, but **too many VMs hung the host** (why we cut to 2).
-The plan: **one lean control-plane server; one big agent that carries every workload.**
+RAM is the hard limit; vCPU overcommits fine, but **too many VMs hung the host** (what killed the 4-VM
+build). The plan: **one lean control-plane server + two workers that split the workload** — two workers
+so Phase 9 can demonstrate **pod anti-affinity** across distinct nodes.
 
 | VM | Role | vCPU | RAM | Notes |
 |---|---|---|---|---|
-| `nimbus-server-1` | etcd + control-plane (cluster-init) | 2 | 3 GB | tainted `CriticalAddonsOnly=true:NoExecute` |
-| `nimbus-agent-1` | workloads | 4 | 6 GB | Traefik, ArgoCD, Prometheus, Loki, mailpit, apps |
-| **VMs total** | | **6** | **9 GB** | down from 8 vCPU / 9.5 GB across 4 VMs |
-| Host headroom | WSL2 + registry:2 + host Grafana + socat | — | ~7 GB | |
+| `nimbus-server-1` | etcd + control-plane (cluster-init) | 3 | 3 GB (3072 MB) | tainted `CriticalAddonsOnly=true:NoExecute` (late) |
+| `nimbus-agent-1` | worker | 4 | 3.5 GB (3584 MB) | Traefik / ArgoCD / Prometheus / Loki / apps — split with agent-2 |
+| `nimbus-agent-2` | worker | 4 | 3.5 GB (3584 MB) | second worker: enables pod anti-affinity (Phase 9) |
+| **VMs total** | | **11** | **10 GB** | 3072 + 3584 + 3584 = 10240 MB |
+| Host headroom | WSL2 + registry:2 + host Grafana + socat | — | ~6 GB | |
 
-(3 GB server: at 2 GB the four core static pods request ~1920Mi and canal can't schedule → `NotReady`;
-see commands.md Phase 2. The agent gets the RAM freed by dropping the two extra servers.)
+**Why this won't hang:** RAM is the hard limit, and 10 GB is **~62% of 16 GB** — well under the ~79%
+(9.5 GB on the old *12 GB* budget) that hung the host during the 4-VM build. vCPU overcommits safely, so
+CPU stays generous (11 vCPU on 20). The old single agent ran the whole stack in 6 GB, so split across
+two workers the real need is ~3 GB each; **3584 MB** adds a cushion for ArgoCD sync spikes while keeping
+total VM RAM at a safe 10 GB. (3 GB server: at 2 GB the four core static pods request ~1920Mi and canal
+can't schedule → `NotReady`; see commands.md Phase 2. If pressure shows, workers can drop to 3072 MB.)
 
-**Why still taint the single server** (ROK does *not* taint its big EC2 control-planes): keep every
-workload on the agent so the control plane / etcd stays healthy and predictable. Prometheus still
-*scrapes* the server over the network — pods don't need to run there. (Applied via kubectl **after**
-the agent exists; tainting at bootstrap blocks the helm-install jobs → no CNI → NotReady.)
+**Why still taint the single server:** keep every
+workload on the two workers so the control plane / etcd stays healthy and predictable. Prometheus still
+*scrapes* the server over the network — pods don't need to run there. (Applied via kubectl **after both
+workers (agent-1 AND agent-2) exist and are Ready**; tainting at bootstrap blocks the helm-install jobs
+→ no CNI → NotReady.)
 
 ## The mental model
 ```
@@ -83,23 +88,29 @@ WSL2 host (16 GB / 20 vCPU / 4 GB swap)
 │                        host:8080→30001 (web / apps)                    │
 │                        host:8025→30004 (mailpit UI)                    │
 │    socat = "the NLB"   host:6444→server:6443 (kube-apiserver, ArgoCD)  │
+│    (NodePorts answer on EVERY node via kube-proxy, so socat → agent-1   │
+│     reaches Traefik even if the scheduler puts the pod on agent-2)      │
 └──────┬───────────────────────────────────────────────┬───────────────┘
-       │ libvirt default net (host = 192.168.122.1)     │ forwards to agent NodePorts
-  ┌──────┴──────────────┐                          ┌──────┴──────────────┐
-  │   nimbus-server-1    │                          │    nimbus-agent-1    │
-  │   etcd + cp          │◀────────────────────────▶│  Traefik (entrypts), │
-  │   (cluster-init)     │   libvirt default net    │  ArgoCD, Prometheus, │
-  │   3 GB, tainted      │                          │  Loki, mailpit, apps │
-  │   etcd = 1 member    │                          │  6 GB                │
-  └─────────────────────┘                          └─────────────────────┘
-     (no HA — single member)        VMs pull images from 192.168.122.1:5000
+       │ libvirt default net (host = 192.168.122.1)     │ forwards to a worker's NodePorts
+  ┌──────┴──────────────┐        ┌──────────────────────┴──────────────────────┐
+  │   nimbus-server-1    │        │              workers (split the stack)        │
+  │   etcd + cp          │        │  ┌──────────────────┐  ┌──────────────────┐  │
+  │   (cluster-init)     │◀──────▶│  │  nimbus-agent-1  │  │  nimbus-agent-2  │  │
+  │   3 GB, tainted      │ default│  │  3.5 GB worker   │  │  3.5 GB worker   │  │
+  │   etcd = 1 member    │  net   │  │  Traefik/ArgoCD/ │  │  Prometheus/Loki/│  │
+  │                      │        │  │  apps (spread)   │  │  apps (spread)   │  │
+  └─────────────────────┘        │  └──────────────────┘  └──────────────────┘  │
+   (no HA — single member)       │   pod anti-affinity spreads replicas across    │
+                                 │   both workers (Phase 9)                       │
+                                 └───────────────────────────────────────────────┘
+          VMs pull images from 192.168.122.1:5000
 ```
 
-## The ALB → Traefik mapping (our socat ⇄ rok's `alb.tf` + `traefik_values.yml`)
-ROK's ALB listens on a "pretty" port and forwards to a **Traefik NodePort entrypoint**; Traefik
-declares one named entrypoint per service. We copy that shape exactly, with socat as the ALB.
+## The ALB → Traefik mapping (socat ⇄ Traefik entrypoints)
+The ALB listens on a "pretty" port and forwards to a **Traefik NodePort entrypoint**; Traefik
+declares one named entrypoint per service. socat plays the ALB.
 
-| Service | ROK ALB listener | Traefik entrypoint | NodePort | Our socat (host → agent) |
+| Service | ALB listener | Traefik entrypoint | NodePort | Our socat (host → agent) |
 |---|---|---|---|---|
 | apps / web | 443 | `web` | 30001 | `localhost:8080` → `:30001` |
 | Loki | 3100 | `loki` | 30000 | `localhost:3100` → `:30000` |
@@ -109,7 +120,7 @@ declares one named entrypoint per service. We copy that shape exactly, with soca
 | mailpit SMTP | 1025 | `mailpit-smtp` | 30005 | `localhost:1025` → `:30005` (optional) |
 
 (We use host `8080` for web instead of 80/443 so socat needn't bind a privileged port; the rest keep
-ROK's own numbers. `nodePort` values are the same ones in `traefik_values.yml`.)
+the entrypoint's chosen numbers.)
 
 ## Target folder structure (our style, extended)
 ```
@@ -122,13 +133,14 @@ host-grafana/
   provisioning/dashboards/*.json
 scripts/
   socat-bridge.sh                        # multi-port "ALB" (table above)
-  write-rke2-server-config.sh            # server-1 = cluster-init; server-2/3 = join; taint
-  write-rke2-agent-config.sh
+  write-rke2-server-config.sh            # server-1 = cluster-init (single server, no join)
+  write-rke2-agent-config.sh             # agent-1 + agent-2 join the server
+  taint-servers.sh                       # taint nimbus-server-1 AFTER both workers are Ready
 vms/
   registries.yaml                        # nodes pull from 192.168.122.1:5000
-  nimbus-server-1/  nimbus-server-2/  nimbus-server-3/  nimbus-agent-1/   # each: build.sh, meta-data, user-data
+  nimbus-server-1/  nimbus-agent-1/  nimbus-agent-2/   # each: meta-data, user-data (made by make-vm.sh)
 k8s/
-  traefik/        helmchart.yaml + traefik-values.yaml (mirror of traefik_values.yml) + entrypoints
+  traefik/        helmchart.yaml + traefik-values.yaml + entrypoints
   argocd/         install/ (helmchart, ingressroute) + applications/ (app-of-apps)
   monitoring/     prometheus-values.yaml, loki-values.yaml, ingressroutes (prometheus/loki entrypoints)
   mailpit/        values.yaml + ingressroute
@@ -145,12 +157,12 @@ apps/
 ### Phase 0 — Tear down v1 & confirm the host budget
 - 0.1 Tear down the v1 lab with the existing **`NUKE.md`** (VMs, Floci, socat, kubeconfig). **KEEP** the
   Ubuntu base image `/var/lib/libvirt/images/noble-server-cloudimg-amd64.img`.
-- 0.2 Confirm `~/.wslconfig` is `memory=12GB / swap=4GB / processors=10 / nestedVirtualization=true`
+- 0.2 Confirm `~/.wslconfig` is `memory=16GB / swap=4GB / processors=20 / nestedVirtualization=true`
   and that it's applied (`nproc`, `free -h` inside WSL). Confirm `/dev/kvm`, `virsh`, `qemu-img`,
   `genisoimage`, `kubectl`, `helm`, `docker` present.
 - 0.3 Reorganize the repo to the structure above (git-rm `terraform/`, `k8s/external-secrets/`;
-  rename `nimbus-*`/`rok-*`→`nimbus-*`). We'll do this as we build each phase, not all at once.
-- 0.4 `NUKE.md` written for the 1-server + 1-agent topology (registry + host-Grafana composes, no Floci).
+  keep the `nimbus-*` prefix). We'll do this as we build each phase, not all at once.
+- 0.4 `NUKE.md` written for the 1-server + 2-worker topology (registry + host-Grafana composes, no Floci).
 → Learn: clean slate; the exact resource envelope we're fitting into.
 
 ### Phase 1 — Host-local registry (our ECR stand-in)
@@ -159,23 +171,32 @@ apps/
 → Learn: the registry the nodes + ArgoCD pull from, reachable at `192.168.122.1:5000` from VMs.
 
 ### Phase 2 — The RKE2 server VM (single control-plane + embedded etcd)
-- 2.1 `vms/make-vm.sh nimbus-server-1 … 2 3072 20`. Boot it.
+- 2.1 `vms/make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 3 3072 20`. Boot it.
 - 2.2 Install RKE2 server on `nimbus-server-1` with **`cluster-init: true`**, shared `token`, `tls-san`
   (server IP + `192.168.122.1` host + `nimbus-server`). **No join steps** — it's the only server.
 - 2.4 Pull kubeconfig to the host (point it at the server IP); `kubectl get nodes` → **1 `control-plane,etcd`
-  Ready** (the taint is applied in Phase 3, after the agent exists).
+  Ready** (the taint is applied in Phase 3, after **both workers** exist).
 - 2.5 **Inspect etcd** (single member): `rke2 etcd-snapshot save`, then via `scripts/etcdctl.sh` —
   `member list -w table`, `endpoint status -w table`, `endpoint health`. One voting member, quorum 1.
 → Learn: embedded etcd, `cluster-init`, the 9345 registration port, the kubeconfig TLS-SAN rewrite.
   (The multi-member quorum/leader/split-brain lesson is out of scope since the 2026-10-08 downsize.)
 
-### Phase 3 — RKE2 agent VM (the workload node) + registry trust
-- 3.1 `vms/make-vm.sh nimbus-agent-1 … 4 6144 40`. Boot and join as agent
+### Phase 3 — RKE2 worker VMs (the workload nodes) + registry trust + taint
+Build and join the two workers **one at a time** — fully verify each before starting the next:
+- 3.1 `vms/make-vm.sh nimbus-agent-1 192.168.122.21 52:54:00:a1:b1:21 4 3584 30`. Boot and join as agent
   (`server: https://<server-1-ip>:9345`, token, unique node-ip/name). `kubectl get nodes` → **2 nodes**
   (1 cp + 1 worker Ready).
-- 3.2 `vms/registries.yaml` on every node → mirror/endpoint `http://192.168.122.1:5000` (insecure OK on
+- 3.2 `vms/make-vm.sh nimbus-agent-2 192.168.122.22 52:54:00:a1:b1:22 4 3584 30`. Join the same way.
+  `kubectl get nodes` → **3 nodes** (1 `control-plane,etcd` + 2 workers Ready).
+- 3.3 `vms/registries.yaml` on every node → mirror/endpoint `http://192.168.122.1:5000` (insecure OK on
   the lab net). Confirm a node can pull a test image.
-→ Learn: agent join at scale, scheduling onto the one untainted node, pulling from the host registry.
+- 3.4 **Now taint the server** (`scripts/taint-servers.sh` → `CriticalAddonsOnly=true:NoExecute` on
+  nimbus-server-1) — **only after both workers are Ready**, so the one-shot helm-install jobs have
+  already run and evicted/rescheduled add-ons have the two workers to land on. Verify workloads sit only
+  on agent-1/agent-2.
+→ Learn: agent join, scheduling onto the untainted workers, pulling from the host registry, and the
+  **taint-ordering rule** — taint *after* the workers exist and are Ready, never at bootstrap (a
+  bootstrap taint blocks the helm-install jobs → no CNI → NotReady).
 
 ### Phase 4 — Networking: socat = the ALB
 - 4.1 Rewrite `scripts/socat-bridge.sh` into the **multi-port "ALB"** from the mapping table (one
@@ -184,12 +205,12 @@ apps/
 → Learn: the ALB listener→target contract, now as host-port→NodePort forwards.
 
 ### Phase 5 — Traefik (the ALB-shaped ingress)
-- 5.1 `k8s/traefik/`: install Traefik via Helm with `traefik-values.yaml` **mirroring**
-  `rok-scaleout/manifests/values/traefik_values.yml` — named entrypoints `web`(30001), `loki`(30000),
+- 5.1 `k8s/traefik/`: install Traefik via Helm with a `traefik-values.yaml` that declares named
+  entrypoints `web`(30001), `loki`(30000),
   `prometheus`(30002), `argocd`(30003), `mailpit`(30004)/`mailpit-smtp`(30005); `metrics.prometheus`
   enabled; access logs; dashboard. Service type NodePort.
 - 5.2 Confirm each entrypoint's NodePort is listening and the socat forwards reach Traefik.
-→ Learn: multi-entrypoint Traefik, NodePort-per-service, the exact ROK ingress config.
+→ Learn: multi-entrypoint Traefik, NodePort-per-service, the ALB-shaped ingress config.
 
 ### Phase 6 — ArgoCD (GitOps)
 - 6.1 `k8s/argocd/install/`: install ArgoCD; expose the UI/API through the Traefik `argocd` entrypoint
@@ -197,14 +218,14 @@ apps/
 - 6.2 `k8s/argocd/applications/`: an **app-of-apps** that will own the monitoring stack, mailpit, and
   `nimbus-app`.
 - 6.3 **Cluster credential — the fragile 1-year path first (on purpose).** Instead of letting ArgoCD
-  use its automatic in-cluster credential, register the target cluster as an *external* cluster the way
-  ROK does — through a stable API endpoint, using the **admin client cert (`certData`) copied from the
-  kubeconfig**. That cert is a 1-year leaf, so this is the setup that breaks in Phase 11. To make the
-  endpoint ROK-shaped, add a socat forward for the API (`localhost:6443 → <server-ip>:6443`) mimicking
-  ROK's dedicated control-plane NLB, and `argocd cluster add` against that. Confirm the cluster secret's
-  `config` holds `tlsClientConfig.certData` (not a `bearerToken`), and note its expiry date — we'll
-  watch it die, then fix it properly in Phase 11.
-→ Learn: the ROK GitOps entrypoint and app-of-apps layout, and *why* an ArgoCD cluster credential built
+  use its automatic in-cluster credential, register the target cluster as an *external* cluster
+  through a stable API endpoint, using the **admin client cert (`certData`) copied from the
+  kubeconfig**. That cert is a 1-year leaf, so this is the setup that breaks in Phase 11. To give the
+  endpoint a stable address, add a socat forward for the API (`localhost:6443 → <server-ip>:6443`)
+  standing in for a dedicated control-plane **NLB**, and `argocd cluster add` against that. Confirm the
+  cluster secret's `config` holds `tlsClientConfig.certData` (not a `bearerToken`), and note its expiry
+  date — we'll watch it die, then fix it properly in Phase 11.
+→ Learn: the GitOps entrypoint and app-of-apps layout, and *why* an ArgoCD cluster credential built
   from the admin cert is a time bomb — the exact thing we fix in Phase 11 by moving to a ServiceAccount.
 
 ### Phase 7 — Observability in-cluster: Prometheus + Loki
@@ -213,17 +234,17 @@ apps/
 - 7.2 `k8s/monitoring/loki-values.yaml`: Loki single-binary (filesystem, tiny) + a log collector
   (Alloy/Promtail) DaemonSet.
 - 7.3 Expose Prometheus via the Traefik `prometheus` entrypoint (30002) and Loki via `loki` (30000)
-  with IngressRoutes — these *are* ROK's ALB `9090`/`3100` listeners.
-→ Learn: in-cluster metrics + logs, surfaced through the ALB shape exactly like ROK.
+  with IngressRoutes — these *are* the ALB `9090`/`3100` listeners.
+→ Learn: in-cluster metrics + logs, surfaced through the ALB shape.
 
 ### Phase 8 — Grafana OUTSIDE the cluster (on the WSL2 host)
 - 8.1 `host-grafana/docker-compose.yml`: Grafana on `:3000`, provisioned datasources
   **Prometheus = `http://localhost:9090`** and **Loki = `http://localhost:3100`** — i.e. *through the
   socat ALB*, never touching the cluster directly.
 - 8.2 Provision a few dashboards: cluster/node health, **etcd**, Traefik, and our app metrics.
-→ Learn: the ROK `chief`→ALB→metrics pattern — Grafana reading a cluster it doesn't live in.
+→ Learn: the external-Grafana→ALB→metrics pattern — Grafana reading a cluster it doesn't live in.
 
-### Phase 9 — Apps: frontend + metrics-first trio, via ArgoCD + registry
+### Phase 9 — Apps: frontend + metrics-first trio, via ArgoCD + registry — and scheduling control
 - 9.1 Build `apps/frontend` + `apps/service-a|b|c` (each exposes `/metrics`: request counter + latency
   histogram). `docker build`, tag `localhost:5000/...`, push.
 - 9.2 `charts/nimbus-app`: Deployments + Services + Traefik IngressRoutes on the `web` entrypoint +
@@ -232,7 +253,79 @@ apps/
   frontend through `localhost:8080` (web) → Traefik → services; watch metrics land in Prometheus and
   **light up the host Grafana**.
 - 9.4 (Optional carry-over) mailpit in-cluster, exposed via the `mailpit` entrypoint.
-→ Learn: the full GitOps → ingress → metrics → external-Grafana loop, end to end.
+
+Then use `service-a` as the exemplar for three scheduling-control lessons (this is the payoff of running
+two workers):
+
+- **9.5 Resource management (requests, limits, OOMKill).** Give `service-a`
+  `requests: {cpu: 100m, memory: 128Mi}` and `limits: {memory: 256Mi}`.
+  - `requests` are the **scheduling floor** + the pod's reservation — the scheduler only places the pod
+    where that much is free, and `kubectl describe node` counts it under *Allocated*. A **cpu request
+    does NOT cap CPU**; it's a weight/floor only.
+  - `limits.memory` is a **hard cap**: exceed it and the container is **OOMKilled** and restarted.
+  - We set **no cpu limit** on purpose (a cpu limit *throttles* rather than kills; for a bursty metrics
+    app that hurts more than it helps). *(A production-scale service might use `cpu: 250m /
+    memory: 1Gi` requests and a `6Gi` memory limit above a ~5.3 GiB report-gen peak — same idea,
+    bigger numbers.)*
+  - Verify: `kubectl describe node <worker>` (Allocated requests rise), `kubectl top pod`, then push the
+    app past 256Mi and watch `kubectl get pod` flip to `OOMKilled` + a restart.
+
+- **9.6 Pod anti-affinity (why two workers).** Scale `service-a` to `replicas: 2` and add preferred pod
+  anti-affinity so the replicas avoid sharing a node:
+  ```yaml
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app: service-a
+  ```
+  - `preferred` = best-effort: the scheduler **strongly prefers** a node with no matching pod but will
+    still co-locate if it must. A `required…` rule is hard — with 3 replicas on 2 workers (or during a
+    `maxSurge` rollout that briefly needs more pods than nodes) it leaves the extra pod **Pending**,
+    stalling the rollout. Preferred keeps rollouts unblocked; it just doesn't *guarantee* separation.
+  - **Namespaces matter** (the lesson in `note.txt`): a `topologySpreadConstraint` counts only pods
+    in the **pod's own namespace** by default, so it can't separate two *environments* in different
+    namespaces (`development` vs `staging`). Cross-namespace separation needs
+    `podAntiAffinity` with an explicit `namespaces:` list or `namespaceSelector:`. Our lab is single-ns,
+    so we demo same-ns anti-affinity across the two workers and only **note** the cross-ns variant.
+  - Verify: `kubectl get pods -o wide` → the two `service-a` replicas on **two different workers**
+    (agent-1 and agent-2). Scale to 3 → the 3rd **co-locates** (preferred allows it); under `required`
+    it would sit `Pending`.
+
+- **9.7 Pod affinity (co-location).** Add a tiny `cache` Deployment with preferred **pod affinity**
+  toward `service-a` (same `topologyKey: kubernetes.io/hostname`, `labelSelector app: service-a`) so the
+  cache lands on the **same** worker as a service-a replica (locality). (`nodeAffinity` is the cousin
+  that pins to a *node* by label — the inverse of the server's repelling taint.)
+  - Verify: `kubectl get pods -o wide` → `cache` shares a worker with a `service-a` replica.
+
+- **9.8 The Helm wiring that makes 9.5–9.7 real.** `resources`/`affinity` in a values file do **nothing**
+  unless the shared chart template renders them into the PodSpec. The `charts/nimbus-app` Deployment
+  template must include, e.g.:
+  ```yaml
+  spec:
+    template:
+      spec:
+        {{- with .Values.serviceA.affinity }}
+        affinity:
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+        containers:
+          - name: service-a
+            {{- with .Values.serviceA.resources }}
+            resources:
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+  ```
+  So each change touches **both** the `charts/nimbus-app` values **and** the Deployment template.
+  Validate the rendered output (`helm template …` or `kubectl get deploy service-a -o yaml`) **before**
+  deploy, then let ArgoCD sync and confirm placement with `kubectl get pods -o wide`.
+
+→ Learn: the full GitOps → ingress → metrics → external-Grafana loop, **plus** how requests/limits drive
+  scheduling + OOM behavior and how pod (anti-)affinity controls placement across the two workers.
 
 ### Phase 10 — Read the data plane: Canal/Calico, Services, Endpoints, EndpointSlices
 RKE2's default CNI is **Canal = Calico (NetworkPolicy) + Flannel (VXLAN pod network)**, installed
@@ -240,10 +333,11 @@ automatically — so Calico is already here, running as the `rke2-canal` DaemonS
 Phase 9 giving us multi-replica Services, this is the moment to *read* how traffic actually finds a pod.
 Pure `kubectl get` — no changes.
 - 10.1 **The CNI itself**: `kubectl -n kube-system get pods -o wide | grep -E 'canal|coredns'` (one
-  `rke2-canal` pod per node + CoreDNS), `kubectl -n kube-system get ds rke2-canal`, and the kube-proxy
-  pods. See that networking is per-node DaemonSets — these are the same canal pods whose CNI token
-  expires in Phase 11.
-- 10.2 **Service → Endpoints**: pick a service with 3 replicas; `kubectl get svc <s>`,
+  `rke2-canal` pod per node — **3 now** — + CoreDNS), `kubectl -n kube-system get ds rke2-canal`, and the
+  kube-proxy pods. See that networking is per-node DaemonSets — these are the same canal pods whose CNI
+  token expires in Phase 11.
+- 10.2 **Service → Endpoints**: pick a multi-replica service (e.g. `service-a` scaled to 2–3);
+  `kubectl get svc <s>`,
   `kubectl get endpoints <s>` — the Endpoints list holds exactly the ready pod IPs. Scale the Deployment
   up/down and re-run to watch the Endpoints set track pod readiness live.
 - 10.3 **EndpointSlices** (the modern replacement for Endpoints): `kubectl get endpointslices`,
@@ -271,9 +365,9 @@ the silent kube-proxy + the ArgoCD cluster-cred expiry — **not** the multi-mem
   ArgoCD `ComparisonError`.
 - 11.4 **Fix with the runbook, scaled to the lab**: snapshot → rotate the single control-plane
   (`systemctl stop rke2-server` → `rke2-killall.sh` → `rke2 certificate rotate` →
-  `systemctl start rke2-server`) → **then** `systemctl restart rke2-agent` → delete stale canal pods
-  → refresh the host kubeconfig. (With one server there's a brief full control-plane outage during the
-  rotate — expected; a multi-server lab would rotate one-at-a-time to keep quorum.)
+  `systemctl start rke2-server`) → **then** `systemctl restart rke2-agent` **on both workers** → delete
+  stale canal pods → refresh the host kubeconfig. (With one server there's a brief full control-plane
+  outage during the rotate — expected; a multi-server lab would rotate one-at-a-time to keep quorum.)
 - 11.5 **Fix ArgoCD the right way — switch cluster credential cert → ServiceAccount.** Rotating the
   node certs does *not* heal ArgoCD: its cluster secret still holds the now-expired admin `certData`
   (Phase 6.3), so apps stay `ComparisonError`. Replace that `certData` config with the **long-lived
@@ -282,7 +376,7 @@ the silent kube-proxy + the ArgoCD cluster-cred expiry — **not** the multi-mem
   application-controller, and watch apps leave `Unknown`. (If apps are `automated`, pause auto-sync
   first, review the diff, then restore — same caution as the runbook.) That token doesn't expire, so
   this never recurs.
-- 11.6 **Verify**: all certs ~1 year out, both nodes Ready, etcd healthy, every kube-proxy
+- 11.6 **Verify**: all certs ~1 year out, all three nodes Ready, etcd healthy, every kube-proxy
   `Unauthorized` count 0, Endpoints/EndpointSlices updating again, apps Synced, host Grafana still
   reading through the ALB, and the ArgoCD cluster secret now using `bearerToken` (no cert to expire).
 → Learn: the incident first-hand on a single node, and the cert→ServiceAccount switch that makes
@@ -292,17 +386,19 @@ the silent kube-proxy + the ArgoCD cluster-cred expiry — **not** the multi-mem
 
 ## Verification checkpoints
 - Phase 2: `kubectl get nodes` → 1 `control-plane,etcd` Ready; `etcdctl member list` shows 1 member.
-- Phase 3: 2 nodes Ready; a pod schedules only onto `nimbus-agent-1`; a test image pulls from the host registry.
+- Phase 3: 3 nodes Ready (1 cp + 2 workers); pods schedule only onto the workers (`nimbus-agent-1`/`nimbus-agent-2`); a test image pulls from the host registry.
 - Phase 5: each Traefik entrypoint NodePort is listening; socat forwards reach it.
 - Phase 8: host Grafana shows live cluster + etcd metrics, pulled through `localhost:9090`/`:3100`.
 - Phase 9: frontend reachable at `localhost:8080`, calls the 3 services, and their `/metrics` appear in
-  Grafana.
+  Grafana; `service-a`'s 2 replicas land on **different workers** (anti-affinity); its resource requests
+  show under `kubectl describe node`; breaching the memory limit yields `OOMKilled`; the `cache` pod
+  co-locates with a `service-a` replica (affinity).
 - Phase 10: `kubectl get` shows the `rke2-canal` DaemonSet per node, and a Service's EndpointSlices
   listing exactly its ready pod IPs (and tracking a scale up/down).
 - Phase 11: expiry reproduced (all documented symptoms seen), then fully recovered via the runbook.
 
 ## Cleanup
-See **`NUKE.md`**: stop socat + remove host kubeconfigs; `virsh destroy/undefine` the 2 VMs and their
+See **`NUKE.md`**: stop socat + remove host kubeconfigs; `virsh destroy/undefine` the 3 VMs and their
 disks; `docker compose down` for `registry/` (and `host-grafana/` once it exists). **KEEP** the Ubuntu
-base image for fast rebuilds. (NUKE.md also has a "partial downsize" section for removing extra
-servers without a full teardown.)
+base image for fast rebuilds. (NUKE.md also has a "drop a worker" partial section for removing
+`nimbus-agent-2` without a full teardown.)

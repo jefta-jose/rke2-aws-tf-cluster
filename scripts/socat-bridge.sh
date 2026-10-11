@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# socat-bridge.sh — the WSL-host TCP forwarders that stand in for ROK's two AWS load balancers.
+# socat-bridge.sh — the WSL-host TCP forwarders that stand in for two AWS load balancers.
 #
-# ROK fronts the cluster with TWO load balancers; we reproduce both with socat on the host:
+# A cloud deployment would front the cluster with TWO load balancers; we reproduce both with socat:
 #   1. the "ALB"  -> a "pretty" host port per Traefik entrypoint, forwarded to nimbus-agent-1's
-#                    NodePorts (rok-scaleout/lower-env/alb.tf listener->target). See PLAN.md.
+#                    NodePorts (an AWS ALB listener->target mapping). See PLAN.md.
 #   2. the control-plane "NLB" -> the kube-apiserver, forwarded to a server node, so there is ONE
 #                    stable API endpoint (https://192.168.122.1:6444) that is reachable from both the
 #                    host AND in-cluster pods, and TLS-valid (192.168.122.1 is in tls-san).
