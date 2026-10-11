@@ -39,24 +39,3 @@ cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/registry && docker compose
 Append `-v` to `docker compose down` to also wipe the registry volume (drops the pushed images);
 omit it to keep them across rebuilds. Host Grafana (Phase 8) only exists once created — tear it down
 the same way with `cd ../host-grafana && docker compose down -v`.
-
-## 4. Leave in place (shared / reused by the rebuild)
-- libvirt `default` network + the MAC→IP reservations (`vms/net-reservations.sh`).
-- The base image (step 2 note).
-- Everything in git.
-
-## Partial: drop a worker (3 VMs → 2) WITHOUT a full nuke
-Keep `nimbus-server-1` + `nimbus-agent-1`; cleanly remove the second worker `nimbus-agent-2`. Workers
-are **not** etcd members, so — unlike removing a server — there is NO etcd `member remove` step: drain
-the node, delete it from the API, then destroy the VM. Draining reschedules its pods onto
-`nimbus-agent-1` first (preferred pod anti-affinity may then co-locate replicas that used to be spread
-— expected once only one worker remains). The final `kubectl get nodes` should show
-`nimbus-server-1` + `nimbus-agent-1`.
-```bash
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-kubectl drain nimbus-agent-2 --ignore-daemonsets --delete-emptydir-data
-kubectl delete node nimbus-agent-2
-virsh -c qemu:///system destroy nimbus-agent-2; virsh -c qemu:///system undefine nimbus-agent-2 --nvram
-sudo rm -f /var/lib/libvirt/images/nimbus-agent-2.qcow2 /var/lib/libvirt/images/nimbus-agent-2-seed.iso
-kubectl get nodes
-```
