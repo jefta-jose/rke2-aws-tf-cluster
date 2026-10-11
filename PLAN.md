@@ -80,7 +80,6 @@ WSL2 host (16 GB / 20 vCPU / 4 GB swap)
 │                        host:9069→30003 (ArgoCD)                        │
 │                        host:8080→30001 (web / apps)                    │
 │                        host:8025→30004 (mailpit UI)                    │
-│    socat = "the NLB"   host:6444→server:6443 (kube-apiserver, ArgoCD)  │
 │    (NodePorts answer on EVERY node via kube-proxy, so socat → agent-1   │
 │     reaches Traefik even if the scheduler puts the pod on agent-2)      │
 └──────┬───────────────────────────────────────────────┬───────────────┘
@@ -207,18 +206,13 @@ Build and join the two workers **one at a time** — fully verify each before st
 ### Phase 6 — ArgoCD (GitOps)
 - 6.1 `k8s/argocd/install/`: install ArgoCD; expose the UI/API through the Traefik `argocd` entrypoint
   (IngressRoute → 30003 → socat `localhost:9069`). Log in via CLI; extract the admin password.
-- 6.2 `k8s/argocd/applications/`: an **app-of-apps** that will own the monitoring stack, mailpit, and
-  `nimbus-app`.
-- 6.3 **Cluster credential — the fragile 1-year path first (on purpose).** Instead of letting ArgoCD
-  use its automatic in-cluster credential, register the target cluster as an *external* cluster
-  through a stable API endpoint, using the **admin client cert (`certData`) copied from the
-  kubeconfig**. That cert is a 1-year leaf, so this is the setup that breaks in Phase 11. To give the
-  endpoint a stable address, add a socat forward for the API (`localhost:6443 → <server-ip>:6443`)
-  standing in for a dedicated control-plane **NLB**, and `argocd cluster add` against that. Confirm the
-  cluster secret's `config` holds `tlsClientConfig.certData` (not a `bearerToken`), and note its expiry
-  date — we'll watch it die, then fix it properly in Phase 11.
-→ Learn: the GitOps entrypoint and app-of-apps layout, and *why* an ArgoCD cluster credential built
-  from the admin cert is a time bomb — the exact thing we fix in Phase 11 by moving to a ServiceAccount.
+- 6.2 `k8s/argocd/applications/`: an **app-of-apps** that owns the monitoring stack, mailpit, and
+  `nimbus-app`, all deployed to the **in-cluster** cluster. ArgoCD manages the very cluster it runs on
+  through its **default in-cluster ServiceAccount** (the `argocd-application-controller` SA + its RBAC) —
+  the correct, out-of-the-box practice — so we register **no** external cluster and store no cluster
+  credential. Applications set `destination.server: https://kubernetes.default.svc`.
+→ Learn: the GitOps entrypoint and the app-of-apps layout; ArgoCD drives its own cluster with a
+  projected, auto-rotated ServiceAccount token, so there is no admin client cert to go stale.
 
 ### Phase 7 — Observability in-cluster: Prometheus + Loki
 - 7.1 `k8s/monitoring/prometheus-values.yaml`: Prometheus (kube-prometheus-stack or prometheus-community,
@@ -342,8 +336,7 @@ Pure `kubectl get` — no changes.
   EndpointSlices, kube-proxy, CNI — all by reading it with `kubectl get`.
 
 ### Phase 11 — Day-2: simulate the certificate-expiry incident (the payoff)
-Recreate the 30 Sep–1 Oct 2026 outage in the lab: the node cert break, the silent kube-proxy, and the
-ArgoCD cluster-cred expiry.
+Recreate the 30 Sep–1 Oct 2026 outage in the lab: the node cert break and the silent kube-proxy.
 - 11.1 **Baseline**: on every VM, inspect leaf cert expiry
   (`openssl x509 -enddate` over the `tls/`, `tls/etcd/`, `agent/*.crt` files — use `sudo sh -c` for the
   glob), decode the Calico CNI token `exp` in `/etc/cni/net.d/calico-kubeconfig`, note the kubeconfig
@@ -353,26 +346,21 @@ ArgoCD cluster-cred expiry.
   RKE2. (Jump with the cluster stopped so etcd/raft never runs across the discontinuity.)
 - 11.3 **Observe the real symptoms** in our cluster: `kubectl` → "must be logged in"; nodes `NotReady`;
   the **silent kube-proxy** `Unauthorized` (node `Ready` but Service routing frozen — now you'll see the
-  Endpoints/EndpointSlices from Phase 10 stop updating); canal `FailedKillPod ... Unauthorized`;
-  ArgoCD `ComparisonError`.
-- 11.4 **Fix with the runbook, scaled to the lab**: snapshot → rotate the single control-plane
-  (`systemctl stop rke2-server` → `rke2-killall.sh` → `rke2 certificate rotate` →
-  `systemctl start rke2-server`) → **then** `systemctl restart rke2-agent` **on both workers** → delete
-  stale canal pods → refresh the host kubeconfig. (With one server there's a brief full control-plane
-  outage during the rotate — expected.)
-- 11.5 **Fix ArgoCD the right way — switch cluster credential cert → ServiceAccount.** Rotating the
-  node certs does *not* heal ArgoCD: its cluster secret still holds the now-expired admin `certData`
-  (Phase 6.3), so apps stay `ComparisonError`. Replace that `certData` config with the **long-lived
-  `kube-system/argocd-manager` ServiceAccount bearer token** (`argocd cluster add` already created the
-  SA + ClusterRoleBinding), set `config` to `{bearerToken, tlsClientConfig:{caData}}`, restart the
-  application-controller, and watch apps leave `Unknown`. (If apps are `automated`, pause auto-sync
-  first, review the diff, then restore — same caution as the runbook.) That token doesn't expire, so
-  this never recurs.
-- 11.6 **Verify**: all certs ~1 year out, all three nodes Ready, etcd healthy, every kube-proxy
-  `Unauthorized` count 0, Endpoints/EndpointSlices updating again, apps Synced, host Grafana still
-  reading through the ALB, and the ArgoCD cluster secret now using `bearerToken` (no cert to expire).
-→ Learn: the incident first-hand on a single node, and the cert→ServiceAccount switch that makes
-  ArgoCD's cluster credential permanent.
+  Endpoints/EndpointSlices from Phase 10 stop updating); canal `FailedKillPod ... Unauthorized`.
+  (ArgoCD apps may show errors while the API is unreachable, but recover on their own once the control
+  plane is back — the in-cluster ServiceAccount token needs no manual fix.)
+- 11.4 **Fix: restart RKE2, then clear the stale pods.** RKE2 regenerates expired (or near-expiry)
+  certificates automatically on daemon start, so recovery is just a restart: `systemctl restart
+  rke2-server` on the server, then `systemctl restart rke2-agent` on **both workers**, then delete the
+  stale canal pods (`kubectl delete pod -n kube-system -l k8s-app=canal`) so they re-read the refreshed
+  CNI token, and refresh the host kubeconfig. kube-proxy (a static pod) picks up the new cert with the
+  server restart. No manual `certificate rotate`, no credential surgery. (With one server there's a
+  brief control-plane outage during the restart — expected.)
+- 11.5 **Verify**: all certs ~1 year out, all three nodes Ready, etcd healthy, every kube-proxy
+  `Unauthorized` count 0, Endpoints/EndpointSlices updating again, apps Synced, and host Grafana still
+  reading through the ALB.
+→ Learn: the incident first-hand on a single node — and that restarting RKE2 auto-rotates expired certs,
+  so recovery is a service restart plus clearing the stale CNI pods.
 
 ---
 

@@ -10,8 +10,8 @@
 # Exposed host-less through the Traefik `prometheus` entrypoint (NodePort 30002 -> socat
 # localhost:9090) via an Ingress carried in the chart's extraManifests.
 #
-# Destination = the EXTERNAL `nimbus` cluster (https://192.168.122.1:6444), so management rides the
-# fragile admin cert (Phase 6.3) and breaks in Phase 11. Requires the socat NLB to be up.
+# Destination = the in-cluster cluster (https://kubernetes.default.svc) — ArgoCD manages the cluster
+# it runs on via its default in-cluster ServiceAccount.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -76,7 +76,7 @@ spec:
                             port:
                               number: 80
   destination:
-    server: https://192.168.122.1:6444
+    server: https://kubernetes.default.svc
     namespace: monitoring
   syncPolicy:
     automated:

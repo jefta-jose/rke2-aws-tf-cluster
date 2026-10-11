@@ -11,7 +11,7 @@
 # - Grafana/Prometheus subcharts OFF (Grafana runs on the host in Phase 8; Prometheus is its own app).
 #
 # Exposure (host-less Ingress on the Traefik `loki` entrypoint) is a separate child app
-# (monitoring-ingress) sourcing k8s/monitoring/ingress/. Destination = nimbus external cluster (6444).
+# (monitoring-ingress) sourcing k8s/monitoring/ingress/. Destination = in-cluster (kubernetes.default.svc).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -47,7 +47,7 @@ spec:
         prometheus:
           enabled: false
   destination:
-    server: https://192.168.122.1:6444
+    server: https://kubernetes.default.svc
     namespace: monitoring
   syncPolicy:
     automated:

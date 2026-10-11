@@ -16,7 +16,7 @@ spec:
     targetRevision: main
     path: k8s/monitoring/ingress
   destination:
-    server: https://192.168.122.1:6444
+    server: https://kubernetes.default.svc
     namespace: monitoring
   syncPolicy:
     automated:

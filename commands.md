@@ -205,6 +205,12 @@ the node kubeconfig only works on-node; the server IP is valid because it's in `
 Only after **both** workers are Ready, taint `nimbus-server-1` so no workloads land on the
 control-plane/etcd node:
 
+Run the following in a second terminal before you apply the taint, because events are only retained ~1h and you want to catch them live:
+```bash
+export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
+kubectl get events -A --watch --field-selector reason=TaintManagerEviction
+```
+
 ```bash
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
 zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/taint-servers.sh
@@ -242,8 +248,6 @@ Result: all six host ports LISTEN (`8080`/web->30001, `3100`/loki->30000, `9090`
   Traefik publishes those NodePorts (Phase 5) — expected. Phase 5.2 verifies they reach Traefik.
 - Idempotent restart matches `socat .*TCP:192.168.122.21:` so a re-run kills only this script's
   forwards, never an open ssh session to the agent. Per-service logs at `/tmp/nimbus-socat-*.log`.
-- The ArgoCD API forward (`localhost:6443 -> <server-ip>:6443`, the control-plane NLB) is a
-  *server*-targeted forward and comes in Phase 6.3 — not in this script yet.
 
 ### 4.2 — /etc/hosts
 
@@ -340,15 +344,10 @@ Why these three:
   warning; Traefik is also the default class). The `traefik.ingress.kubernetes.io/router.entrypoints:
   argocd` annotation is what actually binds it to the entrypoint.
 
-Verify + log in through the ALB:
+### get the password and access it over the web
 
 ```bash
-kubectl -n argocd get svc argocd-server -o jsonpath='{range .spec.ports[*]}{.name}{" "}{.port}{" -> "}{.targetPort}{"\n"}{end}'
-curl -s -o /dev/null -w "argocd via ALB: %{http_code}\n" http://localhost:9069/ --max-time 5
-
 PW=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d); echo "$PW"
-argocd login localhost:9069 --username admin --password "$PW" --plaintext --grpc-web
-argocd account get-user-info
 ```
 
 Result: UI returns 200 over plain HTTP through socat→Traefik `argocd`→argocd-server; CLI login works.
@@ -361,60 +360,9 @@ vs server v2.12 skew is fine for login/cluster-add.)
 
 ArgoCD syncs from a **Git repo**; the project is now a git repo pushed to
 `git@github.com:jefta-jose/rke2-aws-tf-cluster.git` (branch `main`). The app-of-apps + Applications
-are created when we have workloads to put in them (monitoring in Phase 7, apps in Phase 9), targeting
-the **external `nimbus` cluster** (see 6.3) so the fragile credential is actually exercised.
-
-### 6.3 — register the cluster the FRAGILE way (the Phase 11 time bomb)
-
-The control-plane "NLB": the WSL host already runs its OWN kube-apiserver on `:6443` (a local
-Docker/Rancher Desktop k8s), so our stable API endpoint uses host port **6444** → server-1:6443,
-added to `scripts/socat-bridge.sh`. Endpoint `https://192.168.122.1:6444` is reachable from host AND
-in-cluster pods (gateway IP), and TLS-valid (`192.168.122.1` is in `tls-san`).
-
-```bash
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh
-
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-CA=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' | base64 -d)
-curl -s -o /dev/null -w "%{http_code}\n" --cacert <(printf '%s' "$CA") https://192.168.122.1:6444/livez --max-time 5
-
-cp /tmp/nimbus-kubeconfig.yaml /tmp/nimbus-nlb-kubeconfig.yaml
-sed -i 's#https://192.168.122.11:6443#https://192.168.122.1:6444#' /tmp/nimbus-nlb-kubeconfig.yaml
-KUBECONFIG=/tmp/nimbus-nlb-kubeconfig.yaml argocd cluster add "$(KUBECONFIG=/tmp/nimbus-nlb-kubeconfig.yaml kubectl config current-context)" --name nimbus --yes
-```
-
-`argocd cluster add` creates in `kube-system`: SA `argocd-manager`, ClusterRole/Binding
-`argocd-manager-role[-binding]`, and secret **`argocd-manager-long-lived-token`** (a non-expiring SA
-token — this is the Phase 11.5 FIX, kept ready). It stores the cluster with that bearer token.
-
-**Then convert the credential to the admin client cert** — the deliberate 1-year time bomb. A real
-production cluster secret uses `tlsClientConfig.certData` (admin leaf), which is what expires in the incident.
-
-```bash
-SEC=$(kubectl -n argocd get secret -l argocd.argoproj.io/secret-type=cluster -o jsonpath='{.items[0].metadata.name}')
-CA=$(kubectl config view --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
-CERT=$(kubectl config view --raw -o jsonpath='{.users[0].user.client-certificate-data}')
-KEY=$(kubectl config view --raw -o jsonpath='{.users[0].user.client-key-data}')
-PATCH=$(CA="$CA" CERT="$CERT" KEY="$KEY" python3 -c '
-import os, json
-config = json.dumps({"tlsClientConfig": {"caData": os.environ["CA"], "certData": os.environ["CERT"], "keyData": os.environ["KEY"]}})
-print(json.dumps({"stringData": {"config": config}}))')
-kubectl -n argocd patch secret "$SEC" --type merge -p "$PATCH"
-kubectl -n argocd rollout restart statefulset argocd-application-controller
-
-kubectl -n argocd get secret "$SEC" -o jsonpath='{.data.config}' | base64 -d | python3 -m json.tool
-kubectl config view --raw -o jsonpath='{.users[0].user.client-certificate-data}' | base64 -d | openssl x509 -noout -subject -enddate
-```
-
-Result: cluster secret `config` now has `tlsClientConfig.{caData,certData,keyData}`, no `bearerToken`.
-**Admin cert `O=system:masters, CN=system:admin`, `notAfter = Oct 7 2027`** = the fuse (Phase 11's
-+400-day jump blows past it). `argocd cluster list` shows both `nimbus` (6444) and `in-cluster` as
-`Unknown` = "no applications / not monitored" — **normal**, not an error; ArgoCD only health-checks a
-cluster once an Application targets it. The credential is valid *now*; it dies in Phase 11, and 11.5
-reverts `config` to the `argocd-manager-long-lived-token` (which never expires).
-
-**Carry-forward:** Phase 9 Applications must set `destination.server: https://192.168.122.1:6444`
-(the `nimbus` external cluster), NOT `in-cluster`, or the time bomb never bites.
+are created when we have workloads to put in them (monitoring in Phase 7, apps in Phase 9), deployed to
+the **in-cluster** cluster. ArgoCD manages the cluster it runs on via its default in-cluster
+ServiceAccount, so Applications target `https://kubernetes.default.svc`; no external cluster is registered.
 
 ---
 
@@ -442,8 +390,8 @@ ArgoCD's standard cascade-delete finalizer; newer k8s just wants a `/path` suffi
 ### 7.1 — Prometheus child app (tiny)
 
 `k8s/argocd/applications/children/prometheus.yaml` = Application: chart
-`prometheus-community/prometheus` **29.36.0** (Prometheus v3.15.0), destination the **nimbus** external
-cluster (6444), ns `monitoring`. Values: alertmanager + pushgateway off; server emptyDir + 6h retention
+`prometheus-community/prometheus` **29.36.0** (Prometheus v3.15.0), destination the **in-cluster**
+endpoint (`https://kubernetes.default.svc`), ns `monitoring`. Values: alertmanager + pushgateway off; server emptyDir + 6h retention
 (RKE2 has no default StorageClass); node-exporter `tolerations: [{operator: Exists}]` so it runs on the
 tainted server too; host-less Ingress on the Traefik `prometheus` entrypoint via `extraManifests`.
 

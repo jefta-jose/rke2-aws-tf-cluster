@@ -3,7 +3,7 @@
 # Application for every manifest we commit there. This is the only Application we ever apply by hand.
 #
 # Destination is in-cluster/argocd because Application CRs must live in the argocd namespace of the
-# cluster ArgoCD runs on. The child apps target the EXTERNAL `nimbus` cluster (6444) themselves.
+# cluster ArgoCD runs on. The child apps target this same in-cluster cluster.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
