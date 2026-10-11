@@ -4,6 +4,20 @@ Logs **only what WORKED**: the real command + a one-line note + the real result.
 Failed attempts are not logged (except a short "gotcha" note worth keeping).
 See `PLAN.md` for the phase-by-phase design.
 
+**Topology — 1 control-plane/etcd server + 2 worker nodes (3 VMs).** The second worker exists to make
+**pod anti-affinity** real (Phase 9) — you need ≥2 workers to watch replicas land on distinct hosts.
+etcd is a **single member** (quorum 1, no HA / elections / split-brain); the cert-expiry incident
+(Phase 11) still applies. Sizing stays under the RAM ceiling that once hung the host:
+
+| VM | role | vCPU | RAM | disk |
+|---|---|---|---|---|
+| `nimbus-server-1` | control-plane + etcd (cluster-init), tainted | 3 | 3072 MB | 20 GB |
+| `nimbus-agent-1` | worker | 4 | 3584 MB | 30 GB |
+| `nimbus-agent-2` | worker | 4 | 3584 MB | 30 GB |
+
+Totals **11 vCPU / 10 GB RAM** on the measured 16 GB / 20 vCPU WSL2 host → ~6 GB headroom (~62% RAM).
+vCPU overcommits safely; RAM is the only hard limit, so this stays well clear of a hang.
+
 ---
 
 ## Phase 0 — clean slate (2026-10-07)
@@ -30,9 +44,9 @@ curl -s http://localhost:5000/v2/
 
 ---
 
-## Phase 2 — three RKE2 server VMs (real etcd quorum)
+## Phase 2 — the RKE2 server VM (single control-plane + embedded etcd)
 
-### 2.1 — build + boot the VMs (generic builder)
+### 2.1 — build + boot the server VM (generic builder)
 
 Fixed MAC→IP reservations on the libvirt `default` net (run once):
 
@@ -43,11 +57,11 @@ zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/net-reservations.sh
 ```
 
 Build one VM from a qcow2 overlay of the kept base image + a NoCloud seed ISO. Usage:
-`make-vm.sh <name> <ip> <mac> <vcpus> <ram_mb> <disk_gb>` (prompts sudo for the images dir). Servers
-run at 3072 MB (2048 leaves no room for the CNI → NotReady; see 2.2); the agent at 3584 MB.
+`make-vm.sh <name> <ip> <mac> <vcpus> <ram_mb> <disk_gb>` (prompts sudo for the images dir). The server
+runs at 3072 MB (2048 leaves no room for the CNI → NotReady; see 2.2); the two workers at 3584 MB.
 
 ```bash
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 2 3072 20
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 3 3072 20
 
 virsh -c qemu:///system net-dhcp-leases default
 
@@ -91,56 +105,23 @@ kubectl get nodes -o wide
 Result: `nimbus-server-1` **Ready**, roles `control-plane,etcd`. First etcd member live.
 
 **Two design decisions this phase forced (already in the recipe above — not extra steps):**
-1. **Servers run at 3072 MB, not 2048** (set in 2.1). On 2 GB the four core static pods request
+1. **The server runs at 3072 MB, not 2048** (set in 2.1). On 2 GB the four core static pods request
    **1920Mi** (apiserver 1Gi, etcd 512Mi, controller-manager 256Mi, kube-proxy 128Mi) = 97% of the
    node → canal can't schedule → `cni plugin not initialized` → `NotReady`. *(If a VM was already
    built at 2 GB, bump in place without reinstalling: `virsh -c qemu:///system shutdown <n>`; wait
    for `shut off`; `virsh ... setmaxmem <n> 3072M --config`; `virsh ... setmem <n> 3072M --config`;
    `virsh ... start <n>`.)*
-2. **Servers are NOT tainted at bootstrap.** `CriticalAddonsOnly=true:NoExecute` on a node still
+2. **The server is NOT tainted at bootstrap.** `CriticalAddonsOnly=true:NoExecute` on a node still
    bringing up its own CNI blocks the one-shot `helm-install-*` jobs (they don't tolerate it) → no
-   canal → `NotReady`. The taint is removed from `write-rke2-server-config.sh`; we taint all servers
-   via `kubectl` AFTER the agent exists (Phase 3).
+   canal → `NotReady`. The taint is removed from `write-rke2-server-config.sh`; we taint the server
+   via `kubectl` AFTER the workers exist (Phase 3).
 
-### 2.3 — join additional servers (one at a time)
+The version pin matters: the `stable` channel API lookup 404'd (`using stable as release` →
+`releases/download/stable/...` 404), so `INSTALL_RKE2_VERSION=v1.36.5+rke2r1` is pinned explicitly.
+The `curl | sh` install is only a ~65 MB tarball fetch+unpack (seconds); the real time is the
+component **image pulls at first `systemctl start`**.
 
-Build one server VM (host side):
-
-```bash
-
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-server-2 192.168.122.12 52:54:00:a1:b1:12 2 3072 20
-
-```
-
-Then the join, in ONE ssh session (the 3rd arg to the config script = the first server's IP):
-
-```bash
-scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-server-config.sh ubuntu@192.168.122.12:/tmp/
-
-ssh ubuntu@192.168.122.12
-
-sudo bash /tmp/write-rke2-server-config.sh nimbus-server-2 192.168.122.12 192.168.122.11
-
-curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
-
-sudo systemctl enable --now rke2-server.service
-
-sudo ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
-
-mkdir -p ~/.kube && sudo cp /etc/rancher/rke2/rke2.yaml ~/.kube/config \
-  && sudo chown ubuntu:ubuntu ~/.kube/config && chmod 600 ~/.kube/config
-
-kubectl get nodes -o wide
-```
-
-Result: `nimbus-server-2` joined, **2 `control-plane,etcd` nodes Ready** (~3m30s to Ready). Notes:
-- **Pin `INSTALL_RKE2_VERSION`** — the `stable` channel API lookup 404'd (`using stable as release`
-  → `releases/download/stable/...` 404). Pinning skips the lookup and matches server-1's version.
-- The `curl | sh` install is only a ~65 MB tarball fetch+unpack (seconds); the real time is the
-  component **image pulls at first `systemctl start`** (each VM pulls independently — no shared cache).
-- server-3 joins identically: `nimbus-server-3 192.168.122.13 ... 192.168.122.11`.
-
-### 2.5 — inspect the etcd quorum
+### 2.5 — inspect etcd (single member)
 
 ```bash
 ssh ubuntu@192.168.122.11
@@ -166,30 +147,42 @@ sudo bash /tmp/etcdctl.sh endpoint health --cluster
 
 ```
 
-Result: 3 voting members (`IS LEARNER=false`), **quorum = 2 of 3**. Leader was `nimbus-server-2`
-(leadership is elected and moves — it shifted off server-1 when we rebooted it for the RAM bump).
-All members on the same `RAFT TERM` (7) and identical `RAFT INDEX` (21358) = fully in sync. `IN USE`
-7.1 MB on all three; server-1's larger `DB SIZE` is just un-defragged free space (cosmetic).
+Expect **1 voting member** (`nimbus-server-1`, `IS LEARNER=false`) → **quorum = 1**: the single member
+is its own leader, with no elections or split-brain to reason about (the workers are not etcd members).
 Gotcha: the hardened-etcd image has no shell — never `crictl exec ... sh`; call `etcdctl` directly.
 
 ---
 
-## Phase 3 — the agent (workload) node + registry trust
+## Phase 3 — the two worker (agent) nodes + taint
+
+Build and join the workers **one at a time** (build → join → verify before the next). Each is
+3584 MB / 30 GB; the stack spreads across the two instead of piling onto one. The install uses
+`INSTALL_RKE2_TYPE=agent` (agent service, no control plane).
 
 ### 3.1 — build + join nimbus-agent-1
 
-Bigger box: 3584 MB / 40 GB (carries every workload + all images). Build (host side):
-
 ```bash
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-1 192.168.122.21 52:54:00:a1:b1:21 2 3584 40
-```
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-1 192.168.122.21 52:54:00:a1:b1:21 4 3584 30
 
-Join in ONE ssh session — install uses `INSTALL_RKE2_TYPE=agent` (agent service, no control plane):
-
-```bash
 scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.21:/tmp/
 ssh ubuntu@192.168.122.21
 sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-1 192.168.122.21 192.168.122.11
+curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
+sudo systemctl enable --now rke2-agent.service
+```
+
+Expect 2 nodes Ready (1 `control-plane,etcd` + 1 worker) once you can see the cluster (kubeconfig step).
+
+### 3.2 — build + join nimbus-agent-2
+
+The identical join recipe with agent-2's name / IP / MAC:
+
+```bash
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-2 192.168.122.22 52:54:00:a1:b1:22 4 3584 30
+
+scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.22:/tmp/
+ssh ubuntu@192.168.122.22
+sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-2 192.168.122.22 192.168.122.11
 curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
 sudo systemctl enable --now rke2-agent.service
 ```
@@ -203,11 +196,14 @@ export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
 kubectl get nodes -o wide
 ```
 
-Result: **4 nodes Ready** — 3 `control-plane,etcd` + `nimbus-agent-1` (role `<none>`, worker).
-The agent has no API/kubeconfig of its own. The `127.0.0.1`→server-IP rewrite is required because
-the node's kubeconfig only works on-node; the server IP is valid because it's in `tls-san`.
+Expect **3 nodes Ready** — 1 `control-plane,etcd` + 2 workers (`nimbus-agent-1`/`-2`, role `<none>`).
+The agents have no API/kubeconfig of their own. The `127.0.0.1`→server-IP rewrite is required because
+the node kubeconfig only works on-node; the server IP is valid because it's in `tls-san`.
 
-### 3.2 — taint the servers (now safe: the agent exists to catch workloads)
+### 3.3 — taint the server LAST (ordering matters)
+
+Only after **both** workers are Ready, taint `nimbus-server-1` so no workloads land on the
+control-plane/etcd node:
 
 ```bash
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
@@ -215,12 +211,14 @@ zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/taint-servers.sh
 kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
 ```
 
-Result: `CriticalAddonsOnly=true:NoExecute` on the 3 servers (persists in etcd, survives reboots).
-`NoExecute` evicts non-tolerating pods immediately — but **canal** (DaemonSet, blanket tolerations)
-and **kube-proxy** (static pod) are not evicted, so networking is intact. **CoreDNS stays on the
-servers by design** (RKE2 gives it a `CriticalAddonsOnly` toleration for DNS HA); only its
-`autoscaler` (no toleration) moved to the agent — visible proof the taint took. The taint's real job
-is keeping heavy add-ons (Traefik/Prometheus/Loki/apps) on the agent.
+The order is the whole point: `CriticalAddonsOnly=true:NoExecute` applied at bootstrap (while a node is
+still bringing up its CNI) blocks the one-shot `helm-install-*` jobs — they don't tolerate the taint —
+so canal never installs and the node is `NotReady`. Applied here, at steady state with both workers
+already catching workloads, **canal** (DaemonSet, blanket tolerations) and **kube-proxy** (static pod)
+are not evicted, networking stays intact, and the taint lives in the node object in etcd (survives
+reboots). **CoreDNS stays on the server by design** (RKE2 gives it a `CriticalAddonsOnly` toleration for
+DNS HA); only its `autoscaler` moves to a worker — visible proof the taint took. The taint's real job is
+keeping heavy add-ons (Traefik/Prometheus/Loki/apps) on the workers.
 
 ---
 
@@ -229,7 +227,9 @@ is keeping heavy add-ons (Traefik/Prometheus/Loki/apps) on the agent.
 ### 4.1 — bring up the multi-port "ALB"
 
 One `socat` forward per Traefik entrypoint: a "pretty" host port -> the matching NodePort on
-`nimbus-agent-1` (192.168.122.21) — an AWS ALB listener->target contract, socat as the ALB.
+`nimbus-agent-1` (192.168.122.21) — an AWS ALB listener->target contract, socat as the ALB. NodePorts
+are published on **every** node by kube-proxy, so these forwards reach the Traefik pod even when the
+scheduler places it on `nimbus-agent-2` — no change is needed for the second worker.
 
 ```bash
 zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh
@@ -298,8 +298,9 @@ for p in 8080 3100 9090 9069 8025; do echo -n "localhost:$p -> "; curl -s -o /de
 
 Result: Service **NodePort**; entrypoints `web`->30001, `loki`->30000, `prometheus`->30002,
 `argocd`->30003, `mailpit`->30004, `mailpit-smtp`->30005 (websecure got an auto 31906 — harmless).
-Traefik pod on **nimbus-agent-1** (the server taint pushed it to the one untainted node — exactly
-where the socat ALB points). All five curls returned **404** = Traefik answering through the full
+Traefik pod on **one of the two workers** (the server taint keeps it off the control-plane node); the
+socat ALB points at `nimbus-agent-1` and NodePorts answer on every node, so it's reachable regardless
+of which worker runs it. All five curls returned **404** = Traefik answering through the full
 chain `localhost:<port>` → socat → agent NodePort → kube-proxy → Traefik pod. (404 = no IngressRoute
 matches yet; backends come in Phases 6–9.)
 
@@ -419,8 +420,8 @@ reverts `config` to the `argocd-manager-long-lived-token` (which never expires).
 
 ## Phase 7 — observability in-cluster (GitOps via ArgoCD app-of-apps)
 
-Route chosen: **GitOps**. ArgoCD (public repo, no creds) owns monitoring via an app-of-apps. The agent
-had ~2.2 GB free, so Prometheus/Loki are tuned tiny.
+Route chosen: **GitOps**. ArgoCD (public repo, no creds) owns monitoring via an app-of-apps. The
+workers are small, so Prometheus/Loki are tuned tiny.
 
 ### 7.0 — app-of-apps root (the deferred 6.2)
 
@@ -444,13 +445,13 @@ ArgoCD's standard cascade-delete finalizer; newer k8s just wants a `/path` suffi
 `prometheus-community/prometheus` **29.36.0** (Prometheus v3.15.0), destination the **nimbus** external
 cluster (6444), ns `monitoring`. Values: alertmanager + pushgateway off; server emptyDir + 6h retention
 (RKE2 has no default StorageClass); node-exporter `tolerations: [{operator: Exists}]` so it runs on the
-tainted servers too; host-less Ingress on the Traefik `prometheus` entrypoint via `extraManifests`.
+tainted server too; host-less Ingress on the Traefik `prometheus` entrypoint via `extraManifests`.
 
 Workflow: edit child manifest -> `git push` -> `argocd app get prometheus --refresh`.
 
 Result: `monitoring` has `prometheus-server` (2/2: server + config-reload), `kube-state-metrics`,
-and `node-exporter` on **all 4 nodes**. Reachable through the ALB (`curl localhost:9090/-/healthy` ->
-`Prometheus Server is Healthy.`), **20/20 active targets up**
+and `node-exporter` on **all 3 nodes**. Reachable through the ALB (`curl localhost:9090/-/healthy` ->
+`Prometheus Server is Healthy.`), **all active targets up**
 (`curl -s localhost:9090/api/v1/targets?state=active`).
 
 Gotchas:
@@ -462,130 +463,6 @@ Gotchas:
   fine (20/20 up). Only relax its probe if restarts recur under load.
 - A brief startup blip (Prometheus' first scrape pass) momentarily disrupted argocd/9069 + prometheus/
   9090 through the ALB; it self-recovered. Watch for it when adding more load.
-
----
-
-## SCOPE CHANGE — retopology to 3 VMs: 1 server + 2 workers (2026-10-11)
-
-The interim "1 server + 1 agent" plan is superseded. We now build **1 control-plane/etcd server +
-2 worker (agent) nodes = 3 VMs**. The second worker exists for one reason: to make **pod anti-affinity**
-real — you need ≥2 worker nodes to watch replicas land on distinct hosts (the Phase 9 learning goal
-below). etcd is still a **single member** (quorum 1, no HA / elections / split-brain); the cert-expiry
-incident still applies.
-
-**Everything above (Phases 0–7) is the historical 4-VM build — kept as the recipe we reuse.** This
-section is the authoritative **current build** (the commands to run; no results logged until a step
-actually runs). Sizing is deliberately kept under the RAM ceiling that once hung the host:
-
-| VM | role | vCPU | RAM | disk |
-|---|---|---|---|---|
-| `nimbus-server-1` | control-plane + etcd (cluster-init), tainted | 3 | 3072 MB | 20 GB |
-| `nimbus-agent-1` | worker | 4 | 3584 MB | 30 GB |
-| `nimbus-agent-2` | worker | 4 | 3584 MB | 30 GB |
-
-Totals **11 vCPU / 10 GB RAM** on the measured 16 GB / 20 vCPU WSL2 host → ~6 GB headroom (~62% RAM,
-vs the ~79% that hung the host at the old 4-VM sizing). vCPU overcommits safely; RAM is the only hard
-limit, so this stays well clear of a hang. The stack now spreads across the two workers instead of
-piling onto one.
-
-### Build order (one VM at a time — build + join + verify before the next)
-
-Reserve the fixed IPs first (now including agent-2):
-
-```bash
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/net-reservations.sh
-```
-
-**server-1** (control-plane + etcd, cluster-init). Build, then install in one ssh session (Phase 2.2 recipe):
-
-```bash
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-server-1 192.168.122.11 52:54:00:a1:b1:11 3 3072 20
-
-scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-server-config.sh ubuntu@192.168.122.11:/tmp/
-ssh ubuntu@192.168.122.11
-```
-
-On the VM:
-
-```bash
-sudo bash /tmp/write-rke2-server-config.sh nimbus-server-1 192.168.122.11
-curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
-sudo systemctl enable --now rke2-server.service
-sudo ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
-mkdir -p ~/.kube && sudo cp /etc/rancher/rke2/rke2.yaml ~/.kube/config \
-  && sudo chown ubuntu:ubuntu ~/.kube/config && chmod 600 ~/.kube/config
-kubectl get nodes -o wide
-```
-
-Expect 1 node `control-plane,etcd` Ready before moving on.
-
-**agent-1** (worker). Build, then join with `INSTALL_RKE2_TYPE=agent` (Phase 3.1 recipe):
-
-```bash
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-1 192.168.122.21 52:54:00:a1:b1:21 4 3584 30
-
-scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.21:/tmp/
-ssh ubuntu@192.168.122.21
-sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-1 192.168.122.21 192.168.122.11
-curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
-sudo systemctl enable --now rke2-agent.service
-```
-
-Expect 2 nodes Ready (1 `control-plane,etcd` + 1 worker).
-
-**agent-2** (second worker) — the identical join recipe with agent-2's name / IP / MAC:
-
-```bash
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-2 192.168.122.22 52:54:00:a1:b1:22 4 3584 30
-
-scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.22:/tmp/
-ssh ubuntu@192.168.122.22
-sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-2 192.168.122.22 192.168.122.11
-curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
-sudo systemctl enable --now rke2-agent.service
-```
-
-Expect **3 nodes Ready** — 1 `control-plane,etcd` + 2 workers.
-
-**Host (WSL) kubectl** — session-only, pointed at server-1:
-
-```bash
-scp ubuntu@192.168.122.11:.kube/config /tmp/nimbus-kubeconfig.yaml
-sed -i 's#https://127.0.0.1:6443#https://192.168.122.11:6443#' /tmp/nimbus-kubeconfig.yaml
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-kubectl get nodes -o wide
-```
-
-### Taint the server LAST (ordering matters)
-
-Only after **both** workers are Ready, taint `nimbus-server-1` so no workloads land on the
-control-plane/etcd node:
-
-```bash
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/taint-servers.sh
-kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
-```
-
-The order is the whole point: `CriticalAddonsOnly=true:NoExecute` applied at bootstrap (while a node is
-still bringing up its CNI) blocks the one-shot `helm-install-*` jobs — they don't tolerate the taint —
-so canal never installs and the node is `NotReady`. Applied here, at steady state with both workers
-already catching workloads, canal (DaemonSet, blanket tolerations) and kube-proxy (static pod) are not
-evicted, networking stays intact, and the taint lives in the node object in etcd (survives reboots).
-
-### Ingress still points at agent-1 — fine with two workers
-
-`scripts/socat-bridge.sh` keeps forwarding host ports to `nimbus-agent-1` (192.168.122.21). NodePorts
-are published on **every** node by kube-proxy, so `localhost:<port>` → socat → `agent-1:<nodePort>`
-reaches the Traefik pod even when the scheduler places Traefik on agent-2. No socat change is needed
-for the second worker.
-
-### GitOps stack re-syncs unchanged
-
-Once the cluster + ArgoCD + the app-of-apps `root` are back (Phases 5–7 above, unchanged), the Traefik
-HelmChartConfig override, the ArgoCD fragile cluster cert (6.3), and the Prometheus/Loki children
-re-sync themselves from git — the `k8s/` manifests already live in the repo. `registry:2` is left
-running across nukes (its pushed images persist).
 
 ---
 

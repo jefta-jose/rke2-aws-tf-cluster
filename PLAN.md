@@ -2,24 +2,17 @@
 
 > **Naming:** our lab is **Nimbus**; everything we create is prefixed `nimbus-*`.
 
-> **SCOPE CHANGE (2026-10-11):** the lab is now **1 server + 2 workers (3 VMs)**. (History: the original
-> 4-VM 3-server-HA build overcommitted the host → nuked 2026-10-08 → interim 1 server + 1 agent; now
-> grown to a **second worker**.) The second worker exists to teach **pod anti-affinity** — spreading
-> replicas across distinct worker nodes needs ≥2 workers (Phase 9). This still **drops the etcd-HA goal**
-> (single server = 1-member etcd, no quorum/leader election/Phase 11 split-brain). Everything else — the
-> ingress shape, observability, and the full cert-expiry incident on a single node — stays. Sections
-> below are the 3-VM topology; `commands.md` Phases 0–7 are the (now historical) 4-VM build, kept as a
-> record.
+The lab is **1 server + 2 workers (3 VMs)**. The second worker exists to teach **pod anti-affinity** —
+spreading replicas across distinct worker nodes needs ≥2 workers (Phase 9).
 
 ## Context & goal
-The v1 lab proved the hard part: **real RKE2 in libvirt/QEMU VMs on WSL2 works**, and the agent-join
-that crashed in Docker is clean when each node owns its kernel. We keep that foundation (libvirt +
-QEMU + a socat bridge) and rebuild around three new learning goals:
+Real RKE2 in libvirt/QEMU VMs on WSL2, where the agent-join that crashes under Docker is clean because
+each node owns its kernel. On that foundation (libvirt + QEMU + a socat bridge) we build three learning
+goals:
 
-1. ~~**Real etcd HA** — 3 RKE2 server nodes…~~ **DROPPED (2026-10-08, resource limits).** We run a
-   **single** server, so embedded etcd is a 1-member cluster (quorum 1, no elections/split-brain). We
-   still *inspect* etcd (member list, endpoint status/health) — it's just not HA. The cert-expiry
-   incident (goal below) still fully applies to the single node.
+1. **Embedded etcd (single member).** The one server runs RKE2 with `cluster-init`, so etcd is a
+   1-member cluster — quorum 1, no leader elections or split-brain. We still *inspect* it (member list,
+   endpoint status/health). The cert-expiry incident (goal below) applies fully to the single node.
 2. **An AWS-ALB-shaped ingress** — `socat` plays the part of the AWS **ALB**, and **Traefik** is
    configured with a **named-entrypoint-per-service** pattern. The ALB→Traefik contract is
    socat(host "pretty" port) → Traefik NodePort.
@@ -29,7 +22,7 @@ QEMU + a socat bridge) and rebuild around three new learning goals:
    to the Grafana host).
 
 Then, once it all works, we **simulate the 1-year certificate-expiry incident** (30 Sep–1 Oct 2026)
-and fix it with the real runbook — including the **etcd split-brain** a single-server lab can never show.
+and fix it with the real runbook.
 
 **Scope decisions for this rebuild (locked):**
 - **No Floci / Terraform / AWS half, no External Secrets Operator.** We keep only a host-local
@@ -49,9 +42,9 @@ and fix it with the real runbook — including the **etcd split-brain** a single
   preserves git history.)
 
 ## Resource budget — WSL2 measured at `memory=16GB, swap=4GB, processors=20, nestedVirtualization=true`
-RAM is the hard limit; vCPU overcommits fine, but **too many VMs hung the host** (what killed the 4-VM
-build). The plan: **one lean control-plane server + two workers that split the workload** — two workers
-so Phase 9 can demonstrate **pod anti-affinity** across distinct nodes.
+RAM is the hard limit; vCPU overcommits fine. The plan: **one lean control-plane server + two workers
+that split the workload** — two workers so Phase 9 can demonstrate **pod anti-affinity** across distinct
+nodes.
 
 | VM | Role | vCPU | RAM | Notes |
 |---|---|---|---|---|
@@ -61,12 +54,12 @@ so Phase 9 can demonstrate **pod anti-affinity** across distinct nodes.
 | **VMs total** | | **11** | **10 GB** | 3072 + 3584 + 3584 = 10240 MB |
 | Host headroom | WSL2 + registry:2 + host Grafana + socat | — | ~6 GB | |
 
-**Why this won't hang:** RAM is the hard limit, and 10 GB is **~62% of 16 GB** — well under the ~79%
-(9.5 GB on the old *12 GB* budget) that hung the host during the 4-VM build. vCPU overcommits safely, so
-CPU stays generous (11 vCPU on 20). The old single agent ran the whole stack in 6 GB, so split across
-two workers the real need is ~3 GB each; **3584 MB** adds a cushion for ArgoCD sync spikes while keeping
-total VM RAM at a safe 10 GB. (3 GB server: at 2 GB the four core static pods request ~1920Mi and canal
-can't schedule → `NotReady`; see commands.md Phase 2. If pressure shows, workers can drop to 3072 MB.)
+**Why this won't hang:** RAM is the hard limit, and 10 GB is **~62% of 16 GB** — comfortably within
+budget with ~6 GB to spare. vCPU overcommits safely, so CPU stays generous (11 vCPU on 20). Splitting
+the stack across two workers keeps each at ~3 GB of real need; **3584 MB** adds a cushion for ArgoCD
+sync spikes while keeping total VM RAM at a safe 10 GB. (3 GB server: at 2 GB the four core static pods
+request ~1920Mi and canal can't schedule → `NotReady`; see commands.md Phase 2. If pressure shows,
+workers can drop to 3072 MB.)
 
 **Why still taint the single server:** keep every
 workload on the two workers so the control plane / etcd stays healthy and predictable. Prometheus still
@@ -179,7 +172,6 @@ apps/
 - 2.5 **Inspect etcd** (single member): `rke2 etcd-snapshot save`, then via `scripts/etcdctl.sh` —
   `member list -w table`, `endpoint status -w table`, `endpoint health`. One voting member, quorum 1.
 → Learn: embedded etcd, `cluster-init`, the 9345 registration port, the kubeconfig TLS-SAN rewrite.
-  (The multi-member quorum/leader/split-brain lesson is out of scope since the 2026-10-08 downsize.)
 
 ### Phase 3 — RKE2 worker VMs (the workload nodes) + registry trust + taint
 Build and join the two workers **one at a time** — fully verify each before starting the next:
@@ -350,8 +342,8 @@ Pure `kubectl get` — no changes.
   EndpointSlices, kube-proxy, CNI — all by reading it with `kubectl get`.
 
 ### Phase 11 — Day-2: simulate the certificate-expiry incident (the payoff)
-Recreate the 30 Sep–1 Oct 2026 outage in the lab. (Single-server: we reproduce the node cert break +
-the silent kube-proxy + the ArgoCD cluster-cred expiry — **not** the multi-member etcd split-brain.)
+Recreate the 30 Sep–1 Oct 2026 outage in the lab: the node cert break, the silent kube-proxy, and the
+ArgoCD cluster-cred expiry.
 - 11.1 **Baseline**: on every VM, inspect leaf cert expiry
   (`openssl x509 -enddate` over the `tls/`, `tls/etcd/`, `agent/*.crt` files — use `sudo sh -c` for the
   glob), decode the Calico CNI token `exp` in `/etc/cni/net.d/calico-kubeconfig`, note the kubeconfig
@@ -367,7 +359,7 @@ the silent kube-proxy + the ArgoCD cluster-cred expiry — **not** the multi-mem
   (`systemctl stop rke2-server` → `rke2-killall.sh` → `rke2 certificate rotate` →
   `systemctl start rke2-server`) → **then** `systemctl restart rke2-agent` **on both workers** → delete
   stale canal pods → refresh the host kubeconfig. (With one server there's a brief full control-plane
-  outage during the rotate — expected; a multi-server lab would rotate one-at-a-time to keep quorum.)
+  outage during the rotate — expected.)
 - 11.5 **Fix ArgoCD the right way — switch cluster credential cert → ServiceAccount.** Rotating the
   node certs does *not* heal ArgoCD: its cluster secret still holds the now-expired admin `certData`
   (Phase 6.3), so apps stay `ComparisonError`. Replace that `certData` config with the **long-lived
