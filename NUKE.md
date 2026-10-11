@@ -32,7 +32,17 @@ virsh -c qemu:///system list --all
 ```
 **KEEP** `/var/lib/libvirt/images/noble-server-cloudimg-amd64.img` (the pristine base — fast rebuilds).
 
-## 3. Host containers (optional — these are light; keep them to skip Phase 1)
+## 3. Remove the libvirt DHCP reservations (fresh network slate)
+`net-reservations.sh clean` deletes every `nimbus-*` ip-dhcp-host entry on the libvirt `default`
+network — including stale ones left by older topologies (e.g. `nimbus-server-2`/`nimbus-server-3`),
+which the idempotent `add` path never clears. The `default` network itself and its gateway
+`192.168.122.1` stay; only the per-VM MAC→IP reservations go.
+```bash
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/net-reservations.sh clean
+```
+A rebuild re-adds the current three with `zsh .../vms/net-reservations.sh` (no args).
+
+## 4. Host containers (optional — these are light; keep them to skip Phase 1)
 ```bash
 cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/registry && docker compose down
 ```
