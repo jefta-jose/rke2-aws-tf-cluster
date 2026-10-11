@@ -42,10 +42,11 @@ zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/net-reservations.sh c
 ```
 A rebuild re-adds the current three with `zsh .../vms/net-reservations.sh` (no args).
 
-## 4. Host containers (optional — these are light; keep them to skip Phase 1)
+## 4. Host containers
 ```bash
-cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/registry && docker compose down
+cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/registry && docker compose down -v
 ```
-Append `-v` to `docker compose down` to also wipe the registry volume (drops the pushed images);
-omit it to keep them across rebuilds. Host Grafana (Phase 8) only exists once created — tear it down
-the same way with `cd ../host-grafana && docker compose down -v`.
+
+```bash
+cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/host-grafana && docker compose down -v
+```
