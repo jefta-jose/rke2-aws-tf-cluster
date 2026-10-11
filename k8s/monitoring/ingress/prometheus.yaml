@@ -1,7 +1,7 @@
 # Host-less Ingress exposing Prometheus through the Traefik `prometheus` entrypoint (NodePort 30002 ->
 # socat localhost:9090). This IS the AWS ALB :9090 listener. Synced by the monitoring-ingress child app.
-# Backend = Service "prometheus-server" :9090 (set via server.service.servicePort in the prometheus
-# child app, overriding the chart's default :80) so the whole chain is 9090 end to end.
+# Backend = Service "prometheus-server" :80 (the chart's default Service port, which targets the pod's
+# :9090). The external 9090 is the Traefik `prometheus` entrypoint, NOT this backend port.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

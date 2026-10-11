@@ -387,30 +387,94 @@ argocd app get nimbus-root
 (The `metadata.finalizers: resources-finalizer.argocd.argoproj.io` warning is cosmetic — it's
 ArgoCD's standard cascade-delete finalizer; newer k8s just wants a `/path` suffix.)
 
+The monitoring stack is **three** child apps: the Prometheus chart (7.1), the Loki chart (7.2), and a
+shared ingress-glue app (7.3). The two chart apps render **only workloads**; their Traefik Ingresses
+are plain manifests owned by the ingress app, so all the "expose it" wiring is in one place.
+
 ### 7.1 — Prometheus child app (tiny)
 
 `k8s/argocd/applications/children/prometheus.yaml` = Application: chart
-`prometheus-community/prometheus` **29.36.0** (Prometheus v3.15.0), destination the **in-cluster**
-endpoint (`https://kubernetes.default.svc`), ns `monitoring`. Values: alertmanager + pushgateway off; server emptyDir + 6h retention
-(RKE2 has no default StorageClass); node-exporter `tolerations: [{operator: Exists}]` so it runs on the
-tainted server too; host-less Ingress on the Traefik `prometheus` entrypoint via `extraManifests`.
+`prometheus-community/prometheus` **29.36.0** (Prometheus v3.15.0), destination **in-cluster**
+(`https://kubernetes.default.svc`), ns `monitoring`. Values: alertmanager + pushgateway off; server
+emptyDir + 6h retention (RKE2 has no default StorageClass); node-exporter `tolerations: [{operator:
+Exists}]` so it also runs on the tainted server; default scrape config kept (honors
+`prometheus.io/scrape` annotations — no ServiceMonitor needed). No Ingress in the chart — see 7.3.
 
-Workflow: edit child manifest -> `git push` -> `argocd app get prometheus --refresh`.
-
-Result: `monitoring` has `prometheus-server` (2/2: server + config-reload), `kube-state-metrics`,
-and `node-exporter` on **all 3 nodes**. Reachable through the ALB (`curl localhost:9090/-/healthy` ->
-`Prometheus Server is Healthy.`), **all active targets up**
+Result: `monitoring` has `prometheus-server` (2/2: server + config-reload), `kube-state-metrics`, and
+`node-exporter` on **all 3 nodes**. Once 7.3 is synced, reachable through the ALB
+(`curl localhost:9090/-/healthy` -> `Prometheus Server is Healthy.`), all active targets up
 (`curl -s localhost:9090/api/v1/targets?state=active`).
 
+### 7.2 — Loki child app (tiny)
+
+`k8s/argocd/applications/children/loki.yaml` = Application: chart `grafana/loki-stack` **2.10.3**
+(Loki 2.9.3 single-binary + Promtail DaemonSet), destination **in-cluster**, ns `monitoring`. Values:
+Loki filesystem storage, persistence off (emptyDir); Promtail DaemonSet with a blanket toleration so it
+also ships logs from the tainted server (we want etcd/kube-proxy/canal errors visible in Phase 11); the
+chart's bundled Grafana + Prometheus subcharts **off** (Grafana is on the host in Phase 8; Prometheus is
+its own app). The deprecated `loki-stack` chart is chosen on purpose — it's "single-binary Loki +
+collector" with almost no knobs, vs the current `grafana/loki` chart that needs memcached/gateway/canary
+disabled to fit a tiny node. No Ingress in the chart — see 7.3.
+
+Result: `monitoring` gains `loki-0` plus a `loki-promtail` pod per node. Once 7.3 is synced, reachable
+through the ALB (`curl localhost:3100/ready` -> `ready`).
+
+### 7.3 — monitoring-ingress child app (the shared ingress glue)
+
+`k8s/argocd/applications/children/monitoring-ingress.yaml` = a **directory** Application syncing every
+plain manifest under `k8s/monitoring/ingress/` into ns `monitoring`. Currently `prometheus.yaml`
+(Ingress -> entrypoint `prometheus` -> `prometheus-server:80`) and `loki.yaml` (Ingress -> entrypoint
+`loki` -> `loki:3100`). Convention: chart apps render workloads; each service's host-less Traefik
+Ingress is a plain manifest here, one pattern for all (annotation
+`traefik.ingress.kubernetes.io/router.entrypoints: <name>` + `ingressClassName: traefik`). Add a
+service's entrypoint later by dropping its Ingress YAML into that directory — this app picks it up.
+
+Workflow (all three): edit the manifest -> `git add k8s/ && git commit && git push` ->
+`argocd app get <app> --refresh`. ArgoCD reads GitHub, not your working tree.
+
 Gotchas:
-- **`extraManifests` items must be STRINGS**, not YAML maps — the chart renders each via `tpl`. A map
-  gives `wrong type for value; expected string; got map`. Use a `|` block scalar.
 - **kube-state-metrics `Failed to contact API server for /livez: got 0`** warnings + a few early
   restarts (exit 2) are a benign, over-sensitive self-check (short-timeout API ping via kube-proxy to a
-  loaded server); it stops restarting once things settle, and Prometheus (same node) scrapes the API
-  fine (20/20 up). Only relax its probe if restarts recur under load.
-- A brief startup blip (Prometheus' first scrape pass) momentarily disrupted argocd/9069 + prometheus/
-  9090 through the ALB; it self-recovered. Watch for it when adding more load.
+  loaded server); it settles, and Prometheus (same node) scrapes the API fine. Only relax its probe if
+  restarts recur under load.
+- A brief startup blip (Prometheus' first scrape pass) can momentarily disrupt argocd/9069 +
+  prometheus/9090 through the ALB; it self-recovers. Watch for it when adding more load.
+- We deliberately keep each Ingress OUT of its chart. Prometheus' chart would carry it via
+  `extraManifests`, whose items must be STRINGS (rendered through `tpl`; a YAML map errors with
+  `wrong type for value; expected string; got map`) — keeping ingresses as plain manifests in
+  `k8s/monitoring/ingress/` sidesteps that and puts all the glue in one place.
+
+---
+
+## Phase 8 — Grafana on the WSL host (docker compose)
+
+Grafana runs **outside** the cluster, as a host docker-compose in `host-grafana/`, reading Prometheus +
+Loki **through the socat "ALB"** (`localhost:9090` / `localhost:3100`) — never touching the cluster API.
+This mirrors a central Grafana reading a cluster it doesn't live in, over the load balancer.
+
+```bash
+cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/host-grafana && docker compose up -d
+```
+
+Open `http://localhost:3000` (admin / admin). Datasources are provisioned, so no clicking — Prometheus
+(default) + Loki show up under Connections. Verify from the host:
+
+```bash
+curl -s -o /dev/null -w "grafana: %{http_code}\n" http://localhost:3000/api/health --max-time 5
+docker logs nimbus-grafana 2>&1 | grep -iE 'datasource|error' | tail
+```
+
+Key points:
+- Published with a normal `ports: ["3000:3000"]` bridge mapping (same as `registry/`), reachable at
+  `localhost:3000`. **Do NOT use `network_mode: host`** — with Docker Desktop the container shares the
+  Docker VM's net, not the WSL host's, so `:3000` listens inside the container but never surfaces on the
+  WSL host (the exact "it's up but I can't reach it" trap).
+- Datasources reach the host's socat forwards via **`host.docker.internal`** (`extra_hosts:
+  host.docker.internal:host-gateway`), NOT `localhost` — inside the container `localhost` is the
+  container. They go green once `socat-bridge.sh` is up and Prometheus/Loki are running (Phase 7).
+- State persists in the named volume `nimbus-grafana-data`; `docker compose down -v` wipes it.
+- Add dashboards by dropping JSON into `host-grafana/provisioning/dashboards/`, or import by ID in the
+  UI (e.g. 1860 node-exporter, 3662 Prometheus stats).
 
 ---
 
