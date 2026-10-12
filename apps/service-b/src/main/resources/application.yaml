@@ -1,0 +1,23 @@
+# service-b runtime config (PLAN Phase 9.1).
+# - server on 8080 (Traefik/frontend reach it here)
+# - actuator exposes ONLY health + prometheus (nothing else over HTTP)
+# - percentiles-histogram on http.server.requests => real latency buckets in Prometheus/Grafana
+# - health probes split into liveness/readiness groups for the k8s probes in charts/nimbus-app
+spring:
+  application:
+    name: service-b
+server:
+  port: 8080
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true

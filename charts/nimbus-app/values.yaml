@@ -1,0 +1,104 @@
+# charts/nimbus-app values (PLAN Phase 9.2 + the 9.5–9.8 scheduling lessons).
+#
+# ONE reusable chart: templates/deployments.yaml and services.yaml `range` over `.Values.workloads`
+# and render a Deployment (+ Service) per entry, all from the same template. Each workload is just a
+# different value block — add a service by adding a key here, nothing else. (Pattern borrowed from
+# the becklar_messaging_workloads chart.)
+#
+# Image repository is the FULL ref the NODES pull (libvirt gateway, see vms/registries.yaml); we
+# pushed the same images to localhost:5000/nimbus from the host. Tags pinned, never :latest.
+
+# --- shared across every workload ---
+imagePullSecrets: []
+nodeSelector: {}          # unset: the server's NoSchedule taint already keeps workloads on agents
+podAnnotations: {}
+
+# --- the workloads this chart renders ---
+workloads:
+
+  frontend:
+    enabled: true
+    name: frontend        # == Deployment/Service name; the Ingress + nginx FQDNs depend on these
+    replicas: 1
+    image:
+      repository: 192.168.122.1:5000/nimbus/frontend
+      tag: "0.1.0"
+      pullPolicy: IfNotPresent
+    port: 8080
+    service:
+      enabled: true
+    metrics:
+      enabled: false      # nginx has no /metrics endpoint
+    env: {}
+    resources:
+      requests: { cpu: 20m, memory: 32Mi }
+      limits:   { memory: 64Mi }
+    readinessProbe:
+      httpGet: { path: /, port: 8080 }
+      initialDelaySeconds: 3
+      periodSeconds: 10
+    livenessProbe:
+      httpGet: { path: /, port: 8080 }
+      initialDelaySeconds: 5
+      periodSeconds: 15
+    affinity: {}
+
+  serviceA:
+    enabled: true
+    name: service-a       # the exemplar for 9.5–9.8; pods get label `app: service-a`
+    replicas: 1
+    image:
+      repository: 192.168.122.1:5000/nimbus/service-a
+      tag: "0.1.0"
+      pullPolicy: IfNotPresent
+    port: 8080
+    service:
+      enabled: true
+    metrics:
+      enabled: true
+      path: /actuator/prometheus
+    env: {}               # no DB in this lab; service-a runs with dbUp:false
+    # 9.5 — requests = scheduling floor + reservation (NOT a cpu cap); limits.memory = hard OOM cap.
+    #       No cpu limit on purpose (a cpu limit throttles; bad for a bursty metrics app).
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits:   { memory: 256Mi }
+    readinessProbe:
+      httpGet: { path: /actuator/health/readiness, port: 8080 }
+      initialDelaySeconds: 10
+      periodSeconds: 10
+    livenessProbe:
+      httpGet: { path: /actuator/health/liveness, port: 8080 }
+      initialDelaySeconds: 20
+      periodSeconds: 15
+    # 9.6 — left empty now; we fill this with preferred podAntiAffinity so the 2 replicas land on
+    #       different workers. Empty {} = no placement preference (the `with` guard renders nothing).
+    affinity: {}
+
+  serviceB:
+    enabled: true
+    name: service-b
+    replicas: 1
+    image:
+      repository: 192.168.122.1:5000/nimbus/service-b
+      tag: "0.1.0"
+      pullPolicy: IfNotPresent
+    port: 8080
+    service:
+      enabled: true
+    metrics:
+      enabled: true
+      path: /actuator/prometheus
+    env: {}
+    resources:
+      requests: { cpu: 50m, memory: 128Mi }
+      limits:   { memory: 256Mi }
+    readinessProbe:
+      httpGet: { path: /actuator/health/readiness, port: 8080 }
+      initialDelaySeconds: 10
+      periodSeconds: 10
+    livenessProbe:
+      httpGet: { path: /actuator/health/liveness, port: 8080 }
+      initialDelaySeconds: 20
+      periodSeconds: 15
+    affinity: {}

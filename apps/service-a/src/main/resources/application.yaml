@@ -1,0 +1,33 @@
+# service-a runtime config (PLAN Phase 9.1).
+# Datasource comes from env in-cluster (charts/nimbus-app sets SPRING_DATASOURCE_*). The defaults
+# here are only for a local `docker run` against a hand-started Postgres — in the cluster they are
+# overridden to point at the postgres Service.
+#
+# initialization-fail-timeout: -1  => Hikari does NOT fail app startup if Postgres is unreachable at
+# boot; the pod comes up Ready regardless and the first /visit lazily creates the table. This
+# deliberately decouples scheduling (9.5–9.8) from the DB being up.
+spring:
+  application:
+    name: service-a
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/nimbus}
+    username: ${SPRING_DATASOURCE_USERNAME:nimbus}
+    password: ${SPRING_DATASOURCE_PASSWORD:nimbus}
+    hikari:
+      initialization-fail-timeout: -1
+      maximum-pool-size: 5
+server:
+  port: 8080
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true

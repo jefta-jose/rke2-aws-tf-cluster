@@ -1,0 +1,85 @@
+{{/*
+One Deployment per entry in .Values.workloads — the whole point of the reusable chart. Everything
+that differs between frontend / service-a / service-b lives in values; this template is shared.
+
+9.8 lesson: the resources / affinity / probe blocks below do NOTHING unless rendered here. The
+`{{- with $w.affinity }}` guard means an empty {} in values renders no affinity at all; put a rule
+in workloads.serviceA.affinity and it appears in the PodSpec.
+*/}}
+{{- range $component, $w := .Values.workloads }}
+{{- if $w.enabled }}
+{{- $name := required (printf "workloads.%s.name is required" $component) $w.name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "nimbus-app.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component | kebabcase }}
+    app: {{ $name }}
+spec:
+  replicas: {{ $w.replicas }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "nimbus-app.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $component | kebabcase }}
+        app: {{ $name }}
+      {{- if or $w.metrics.enabled $.Values.podAnnotations }}
+      annotations:
+        {{- if $w.metrics.enabled }}
+        # Prometheus (default scrape config) picks the pod up via these — no ServiceMonitor needed.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ $w.port }}"
+        prometheus.io/path: {{ $w.metrics.path }}
+        {{- end }}
+        {{- with $.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $w.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $name }}
+          image: {{ required (printf "workloads.%s.image.repository is required" $component) $w.image.repository }}:{{ required (printf "workloads.%s.image.tag is required" $component) $w.image.tag }}
+          imagePullPolicy: {{ $w.image.pullPolicy }}
+          ports:
+            - containerPort: {{ $w.port }}
+          {{- with $w.env }}
+          env:
+            {{- range $k, $v := . }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+          {{- with $w.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $w.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $w.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+{{- end }}

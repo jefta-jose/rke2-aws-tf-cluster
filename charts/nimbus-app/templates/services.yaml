@@ -1,0 +1,28 @@
+{{/*
+One ClusterIP Service per workload with service.enabled. Names match the Deployment ($w.name), so
+the frontend's nginx reaches them at service-a:8080 / service-b:8080 and the Ingress targets
+frontend:8080. service-a/service-b stay internal (ClusterIP) — only the frontend is exposed, via
+the host-less Traefik Ingress in k8s/apps/ingress/.
+*/}}
+{{- range $component, $w := .Values.workloads }}
+{{- if and $w.enabled $w.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $w.name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "nimbus-app.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component | kebabcase }}
+    app: {{ $w.name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: {{ $w.name }}
+  ports:
+    - name: http
+      port: {{ $w.port }}
+      targetPort: {{ $w.port }}
+{{- end }}
+{{- end }}

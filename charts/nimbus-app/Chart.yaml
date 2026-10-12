@@ -1,0 +1,6 @@
+apiVersion: v2
+name: nimbus-app
+description: Nimbus Phase 9 apps — React frontend + service-a + service-b (no DB)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
