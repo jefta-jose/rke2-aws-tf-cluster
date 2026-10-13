@@ -231,11 +231,12 @@ the lab; real = `ebs-sc` PVC), no Azure AD/SMTP (no tenant/relay), datasources p
 (real = UI), Traefik host-less Ingress (real = nginx + cert-manager TLS).
 - 8.1 Create the `grafana` namespace and the `grafana` Secret by hand (`admin-user` / `admin-password`) —
   never in git; the repo is public.
-- 8.2 `k8s/applications/grafana.yaml`: the ArgoCD Application (chart 8.10.1, tiny resources, `emptyDir`,
-  datasources **Prometheus** = `prometheus-server.monitoring.svc:80`, **Loki** = `loki.monitoring.svc:3100`).
-- 8.3 Expose it: Traefik `grafana` entrypoint (:3000, NodePort 30006) in
-  `k8s/bootstrap/traefik/helmchartconfig.yaml`, Ingress `k8s/ingress/grafana.yaml`, socat `3000 → 30006`.
-- 8.4 Log in at `http://localhost:3000`; both datasources green.
+- 8.2 Push to git and let ArgoCD sync (same flow as Phase 7): `k8s/applications/grafana.yaml` (chart 8.10.1,
+  tiny resources, `emptyDir`, datasources **Prometheus** = `prometheus-server.monitoring.svc:80`, **Loki** =
+  `loki.monitoring.svc:3100`) and `k8s/ingress/grafana.yaml` (picked up by the existing `ingress` app).
+  The Traefik `grafana` entrypoint (:3000, NodePort 30006) and the socat `3000 → 30006` forward are
+  already part of Phases 4-5 — nothing Traefik/socat-related is applied in Phase 8.
+- 8.3 Log in at `http://localhost:3000`; both datasources green.
 - **Deferred (own step, done when we get there):** track a dashboard + an alert rule in git and have ArgoCD
   deliver them to Grafana (sidecar-loaded ConfigMaps) — the part that proves the real-Rok workflow.
 → Learn: deploying Grafana the real-Rok way, but under GitOps — chart pin, out-of-band secret, ingress

@@ -280,7 +280,8 @@ zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh
 The start is idempotent; tear the forwards down with `zsh .../socat-bridge.sh stop`.
 
 Result: all six host ports LISTEN (`8080`/web->30001, `3100`/loki->30000, `9090`/prometheus->30002,
-`9069`/argocd->30003, `8025`/mailpit-ui->30004, `1025`/mailpit-smtp->30005). Notes:
+`9069`/argocd->30003, `8025`/mailpit-ui->30004, `1025`/mailpit-smtp->30005; plus `3000`/grafana->30006,
+which `socat-bridge.sh` also forwards for the in-cluster Grafana of Phase 8). Notes:
 - The forwards bind `0.0.0.0` and accept connections now, but can't *complete* a connection until
   Traefik publishes those NodePorts (Phase 5) — expected. Phase 5.2 verifies they reach Traefik.
 - Idempotent restart matches `socat .*TCP:192.168.122.21:` so a re-run kills only this script's
@@ -307,6 +308,9 @@ RKE2's helm-controller watches for a `HelmChartConfig` of the SAME name/namespac
 chart and re-runs the install with its `valuesContent` deep-merged over the chart defaults. Our values
 set named entrypoints, a NodePort service, metrics, JSON access logs, and the dashboard — minus any
 app-specific entrypoints or plugins we don't need. File: `k8s/bootstrap/traefik/helmchartconfig.yaml`.
+The entrypoints are `web`(30001), `loki`(30000), `prometheus`(30002), `argocd`(30003), `mailpit`(30004),
+`mailpit-smtp`(30005) and `grafana`(30006, port 3000 — used by Phase 8). All of Traefik is applied here, so
+Phase 8 does not touch Traefik or socat.
 
 ```bash
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
@@ -472,16 +476,20 @@ Gotchas:
 > **STATUS: written, NOT YET RUN.** Mark each step with its real result once you run it (this file logs
 > only what worked).
 
-Grafana now runs **in the cluster**, deployed by ArgoCD the way the real Rok Grafana is (chart
-`grafana/grafana` **8.10.1** = Grafana 11.5.2, release `grafana`, **namespace `grafana`**). The old
-host docker-compose Grafana (`host-grafana/`) is removed. Deliberate differences from real Rok:
-persistence off (emptyDir; real = `ebs-sc` PVC), no Azure AD/SMTP, datasources provisioned in values
-(real = UI), Traefik host-less Ingress (real = nginx + cert-manager TLS).
+Grafana runs **in the cluster**, deployed by ArgoCD the way the real Rok Grafana is (chart
+`grafana/grafana` **8.10.1** = Grafana 11.5.2, release `grafana`, **namespace `grafana`**). The old host
+docker-compose Grafana (`host-grafana/`) is removed. Deliberate differences from real Rok: persistence off
+(emptyDir; real = `ebs-sc` PVC), no Azure AD/SMTP, datasources provisioned in values (real = UI), Traefik
+host-less Ingress (real = nginx + cert-manager TLS).
+
+**Prerequisite (already done in Phases 4-5, nothing to run here):** the Traefik `grafana` entrypoint
+(NodePort 30006) is applied and socat forwards `localhost:3000` -> 30006. Phase 8 is just the same
+GitOps flow as Phase 7: create the namespace + Secret by hand, push, let ArgoCD sync.
 
 ### 8.1 — create the namespace + admin Secret by hand (never in git)
 
 The repo is public, so credentials never go in a manifest — same idea as the real `grafana-secret`.
-Create these BEFORE the push so the pod finds its Secret on first start:
+Do this BEFORE the push so the pod finds its Secret on first start:
 
 ```bash
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
@@ -492,26 +500,10 @@ kubectl -n grafana create secret generic grafana \
   --from-literal=admin-password="$(openssl rand -base64 18)"
 ```
 
-### 8.2 — expose it: add the `grafana` Traefik entrypoint, then the socat forward
+### 8.2 — push to git; ArgoCD syncs
 
-`k8s/bootstrap/traefik/helmchartconfig.yaml` gained a `grafana` entrypoint (port 3000, NodePort 30006).
-It is a bootstrap file, so you apply it. Traefik restarts briefly (the 8080/9090/3100 routes blip for a
-few seconds):
-
-```bash
-kubectl apply -f /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/k8s/bootstrap/traefik/helmchartconfig.yaml
-kubectl -n kube-system get pods -l job-name=helm-install-rke2-traefik -w
-kubectl -n kube-system get svc rke2-traefik -o jsonpath='{range .spec.ports[*]}{.name}{"\t->node:"}{.nodePort}{"\n"}{end}'
-
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh
-```
-
-Expect `grafana -> node:30006` in the Service ports and `localhost:3000` listening.
-
-### 8.3 — deploy via ArgoCD (GitOps)
-
-`k8s/applications/grafana.yaml` (the Application) and `k8s/ingress/grafana.yaml` (the Ingress, synced by
-the `ingress` app) are committed; ArgoCD reads GitHub, not your working tree:
+`k8s/applications/grafana.yaml` (the Application) and `k8s/ingress/grafana.yaml` (the Ingress, picked up
+by the existing `ingress` app) are the only new manifests. ArgoCD reads GitHub, not your working tree:
 
 ```bash
 git add -A && git commit -m "grafana via argocd" && git push
@@ -519,7 +511,7 @@ argocd app get grafana --refresh
 kubectl -n grafana get pods
 ```
 
-### 8.4 — log in and verify
+### 8.3 — log in and verify
 
 ```bash
 kubectl -n grafana get secret grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
