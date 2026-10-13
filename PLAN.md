@@ -325,7 +325,23 @@ two workers):
 → Learn: the full GitOps → ingress → metrics → Grafana loop, **plus** how requests/limits drive
   scheduling + OOM behavior and how pod (anti-)affinity controls placement across the two workers.
 
-### Phase 10 — Read the data plane: Canal/Calico, Services, Endpoints, EndpointSlices
+### Phase 10 — Manage Grafana content via git (dashboards + alert rules as code)
+The real Rok Grafana (42 dashboards, 43 alert rules) lives only in its PVC — nothing is in git. This phase
+proves the GitOps alternative on the lab Grafana: Grafana's chart can run **sidecar containers** that watch
+Kubernetes for labelled ConfigMaps and load them as dashboards / alert rules. Path: file in git → ArgoCD
+syncs a ConfigMap → sidecar sees it → Grafana loads it. Delete the file → it disappears from Grafana.
+- 10.1 Enable the dashboard sidecar (`grafana_dashboard`) and alert sidecar (`grafana_alert`) in
+  `k8s/applications/grafana.yaml`; push; confirm the pod now runs 3 containers.
+- 10.2 `k8s/grafana/` (kustomize turns a dashboard JSON into a labelled ConfigMap) + a `grafana-content`
+  Application; add one dashboard; push; it appears in Grafana.
+- 10.3 Add one alert rule (and the contact point it routes to) the same way.
+- 10.4 Change the rule threshold in git → watch it change; delete the file → watch it vanish (prune);
+  edit in the UI → see provisioned objects are read-only / drift is reverted.
+- 10.5 Export an existing UI-built rule into the repo format (the real-Rok migration step).
+→ Learn: dashboards/alerts as code, the sidecar label contract, prune + drift, and how a UI-only Grafana
+  becomes reviewable in git.
+
+### Phase 11 — Read the data plane: Canal/Calico, Services, Endpoints, EndpointSlices
 RKE2's default CNI is **Canal = Calico (NetworkPolicy) + Flannel (VXLAN pod network)**, installed
 automatically — so Calico is already here, running as the `rke2-canal` DaemonSet. With the apps from
 Phase 9 giving us multi-replica Services, this is the moment to *read* how traffic actually finds a pod.
@@ -333,7 +349,7 @@ Pure `kubectl get` — no changes.
 - 10.1 **The CNI itself**: `kubectl -n kube-system get pods -o wide | grep -E 'canal|coredns'` (one
   `rke2-canal` pod per node — **3 now** — + CoreDNS), `kubectl -n kube-system get ds rke2-canal`, and the
   kube-proxy pods. See that networking is per-node DaemonSets — these are the same canal pods whose CNI
-  token expires in Phase 11.
+  token expires in Phase 12.
 - 10.2 **Service → Endpoints**: pick a multi-replica service (e.g. `service-a` scaled to 2–3);
   `kubectl get svc <s>`,
   `kubectl get endpoints <s>` — the Endpoints list holds exactly the ready pod IPs. Scale the Deployment
@@ -343,11 +359,11 @@ Pure `kubectl get` — no changes.
   up, each with `conditions.ready`, `nodeName`, and a `targetRef` back to its pod.
 - 10.4 **How it's wired**: trace the chain — Service (stable ClusterIP) → EndpointSlice (pod IPs) →
   **kube-proxy** programs that into each node's iptables → Canal/Flannel VXLAN carries the packet to the
-  pod's node. This is exactly the chain that silently freezes in Phase 11 when kube-proxy's cert expires.
+  pod's node. This is exactly the chain that silently freezes in Phase 12 when kube-proxy's cert expires.
 → Learn: Calico/Canal ships with RKE2; and the real path a request takes — Service, Endpoints,
   EndpointSlices, kube-proxy, CNI — all by reading it with `kubectl get`.
 
-### Phase 11 — Day-2: simulate the certificate-expiry incident (the payoff)
+### Phase 12 — Day-2: simulate the certificate-expiry incident (the payoff)
 Recreate the 30 Sep–1 Oct 2026 outage in the lab: the node cert break and the silent kube-proxy.
 - 11.1 **Baseline**: on every VM, inspect leaf cert expiry
   (`openssl x509 -enddate` over the `tls/`, `tls/etcd/`, `agent/*.crt` files — use `sudo sh -c` for the
@@ -358,7 +374,7 @@ Recreate the 30 Sep–1 Oct 2026 outage in the lab: the node cert break and the 
   RKE2. (Jump with the cluster stopped so etcd/raft never runs across the discontinuity.)
 - 11.3 **Observe the real symptoms** in our cluster: `kubectl` → "must be logged in"; nodes `NotReady`;
   the **silent kube-proxy** `Unauthorized` (node `Ready` but Service routing frozen — now you'll see the
-  Endpoints/EndpointSlices from Phase 10 stop updating); canal `FailedKillPod ... Unauthorized`.
+  Endpoints/EndpointSlices from Phase 11 stop updating); canal `FailedKillPod ... Unauthorized`.
   (ArgoCD apps may show errors while the API is unreachable, but recover on their own once the control
   plane is back — the in-cluster ServiceAccount token needs no manual fix.)
 - 11.4 **Fix: restart RKE2, then clear the stale pods.** RKE2 regenerates expired (or near-expiry)
@@ -385,9 +401,10 @@ Recreate the 30 Sep–1 Oct 2026 outage in the lab: the node cert break and the 
   Grafana; `service-a`'s 2 replicas land on **different workers** (anti-affinity); its resource requests
   show under `kubectl describe node`; breaching the memory limit yields `OOMKilled`; the `cache` pod
   co-locates with a `service-a` replica (affinity).
-- Phase 10: `kubectl get` shows the `rke2-canal` DaemonSet per node, and a Service's EndpointSlices
+- Phase 10: a dashboard and an alert rule that exist only as files in git appear in Grafana after a push, change when the file changes, and disappear when it is deleted.
+- Phase 11: `kubectl get` shows the `rke2-canal` DaemonSet per node, and a Service's EndpointSlices
   listing exactly its ready pod IPs (and tracking a scale up/down).
-- Phase 11: expiry reproduced (all documented symptoms seen), then fully recovered via the runbook.
+- Phase 12: expiry reproduced (all documented symptoms seen), then fully recovered via the runbook.
 
 ## Cleanup
 See **`NUKE.md`**: stop socat + remove host kubeconfigs; `virsh destroy/undefine` the 3 VMs and their

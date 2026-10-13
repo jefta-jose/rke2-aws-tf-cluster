@@ -12,7 +12,7 @@
 # Exposed host-less through the Traefik `grafana` entrypoint (NodePort 30006 -> socat localhost:3000) via
 # a plain Ingress in k8s/ingress/ (synced by the `ingress` app) — NOT the chart, same as every other app.
 #
-# Dashboards + alert rules tracked in git are a LATER step; this app is just the deploy.
+# Phase 8 = the deploy; Phase 10 adds the sidecars below so dashboards + alert rules can come from git.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -56,6 +56,27 @@ spec:
         resources:
           requests: { cpu: 50m, memory: 96Mi }
           limits: { memory: 256Mi }
+        # PLAN Phase 10: sidecars load dashboards / alert rules from labelled ConfigMaps (git -> ArgoCD -> CM).
+        sidecar:
+          dashboards:
+            enabled: true
+            label: grafana_dashboard
+            labelValue: "1"
+            searchNamespace: ALL
+            folderAnnotation: grafana_folder
+            provider:
+              foldersFromFilesStructure: true
+            resources:
+              requests: { cpu: 10m, memory: 48Mi }
+              limits: { memory: 96Mi }
+          alerts:
+            enabled: true
+            label: grafana_alert
+            labelValue: "1"
+            searchNamespace: ALL
+            resources:
+              requests: { cpu: 10m, memory: 48Mi }
+              limits: { memory: 96Mi }
   destination:
     server: https://kubernetes.default.svc
     namespace: grafana

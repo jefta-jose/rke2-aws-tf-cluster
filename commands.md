@@ -7,7 +7,7 @@ See `PLAN.md` for the phase-by-phase design.
 **Topology — 1 control-plane/etcd server + 2 worker nodes (3 VMs).** The second worker exists to make
 **pod anti-affinity** real (Phase 9) — you need ≥2 workers to watch replicas land on distinct hosts.
 etcd is a **single member** (quorum 1, no HA / elections / split-brain); the cert-expiry incident
-(Phase 11) still applies. Sizing stays under the RAM ceiling that once hung the host:
+(Phase 12) still applies. Sizing stays under the RAM ceiling that once hung the host:
 
 | VM | role | vCPU | RAM | disk |
 |---|---|---|---|---|
@@ -435,7 +435,7 @@ Result: `monitoring` has `prometheus-server` (2/2: server + config-reload), `kub
 `k8s/applications/loki.yaml` = Application: chart `grafana/loki-stack` **2.10.3**
 (Loki 2.9.3 single-binary + Promtail DaemonSet), destination **in-cluster**, ns `monitoring`. Values:
 Loki filesystem storage, persistence off (emptyDir); Promtail DaemonSet with a blanket toleration so it
-also ships logs from the tainted server (we want etcd/kube-proxy/canal errors visible in Phase 11); the
+also ships logs from the tainted server (we want etcd/kube-proxy/canal errors visible in Phase 12); the
 chart's bundled Grafana + Prometheus subcharts **off** (Grafana is on the host in Phase 8; Prometheus is
 its own app). The deprecated `loki-stack` chart is chosen on purpose — it's "single-binary Loki +
 collector" with almost no knobs, vs the current `grafana/loki` chart that needs memcached/gateway/canary
@@ -648,3 +648,38 @@ the app past its `limits.memory` and watch the container go `OOMKilled` with a r
 ```bash
 kubectl -n nimbus get pod -l app=service-a -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].lastState.terminated.reason}{"\t"}{.status.containerStatuses[0].restartCount}{"\n"}{end}'
 ```
+
+---
+
+## Phase 10 — manage Grafana via git (dashboards + alert rules as code)
+
+> **STATUS: in progress. Steps below are written but NOT YET RUN** — fill in each real result once it
+> works (this file logs only what worked).
+
+Idea: the Grafana chart can run **sidecar containers** that watch Kubernetes for ConfigMaps carrying a
+label and load them into Grafana. So: file in git -> ArgoCD syncs a labelled ConfigMap -> sidecar sees it ->
+Grafana loads it. Delete the file and it disappears. This is how the real Rok Grafana (UI-only today,
+nothing in git) could be put under version control.
+
+Baseline before changing anything (done): `grafana` app healthy, pod `1/1`, a single container `grafana`,
+`localhost:3000/api/health` -> `200`. (`argocd` CLI needed a fresh `argocd login localhost:9069 ... --plaintext
+--grpc-web` — its old token was stale.)
+
+### 10.1 — enable the dashboard + alert sidecars
+
+`k8s/applications/grafana.yaml` gained a `sidecar:` block under `valuesObject`:
+- `sidecar.dashboards`: watches ConfigMaps labelled `grafana_dashboard: "1"` in ALL namespaces; the folder
+  comes from the annotation `grafana_folder`.
+- `sidecar.alerts`: watches ConfigMaps labelled `grafana_alert: "1"` in ALL namespaces; after writing a file
+  it calls Grafana's `/api/admin/provisioning/alerting/reload` using the admin Secret from Phase 8.
+
+```bash
+git add -A && git commit -m "grafana: enable dashboard + alert sidecars" && git push
+argocd app get grafana --refresh
+kubectl -n grafana get pods -w
+kubectl -n grafana get pod -l app.kubernetes.io/name=grafana -o jsonpath='{range .items[0].spec.containers[*]}{.name}{"\n"}{end}'
+```
+
+Expect: the pod is replaced (rolling update), `3/3` Ready, containers `grafana-sc-alerts`,
+`grafana-sc-dashboard`, `grafana`. Also `kubectl get clusterrole grafana-clusterrole` now exists (the
+sidecars need cluster-wide read on ConfigMaps since they watch ALL namespaces).
