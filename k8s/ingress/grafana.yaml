@@ -1,0 +1,23 @@
+# Host-less Ingress exposing Grafana through the Traefik `grafana` entrypoint (NodePort 30006 ->
+# socat localhost:3000). This IS the AWS ALB :3000 listener (real Rok uses an nginx Ingress + TLS on
+# grafana-therok.amarok.com; the lab keeps the host-less Traefik pattern). Synced by the `ingress` child app.
+# Backend = Service "grafana" :80 (the chart's default Service port, which targets the pod's :3000).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: grafana
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: grafana
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 80

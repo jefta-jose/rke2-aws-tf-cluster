@@ -1,0 +1,67 @@
+# Grafana (in-cluster), managed by ArgoCD via the app-of-apps. PLAN Phase 8.
+#
+# Mirrors the REAL Rok Grafana (rok-scaleout/chief): same chart + version (grafana/grafana 8.10.1 =
+# Grafana 11.5.2), values supplied inline here instead of a grafana-values.yml. Deliberate lab differences:
+#   - persistence OFF (emptyDir): RKE2 has no default StorageClass here (real Rok: ebs-sc PVC, 2Gi).
+#   - no Azure AD / SMTP: the lab has no Entra tenant or mail relay.
+#   - admin credentials come from a Secret named `grafana` that YOU create out-of-band (never in git; this
+#     repo is public) — same pattern as the real grafana-secret. See commands.md Phase 8.
+#   - datasources are PROVISIONED here (real Rok created them in the UI), pointing at the in-cluster
+#     Services of the prometheus + loki apps.
+#
+# Exposed host-less through the Traefik `grafana` entrypoint (NodePort 30006 -> socat localhost:3000) via
+# a plain Ingress in k8s/ingress/ (synced by the `ingress` app) — NOT the chart, same as every other app.
+#
+# Dashboards + alert rules tracked in git are a LATER step; this app is just the deploy.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: grafana
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://grafana.github.io/helm-charts
+    chart: grafana
+    targetRevision: 8.10.1
+    helm:
+      releaseName: grafana
+      valuesObject:
+        persistence:
+          enabled: false
+        admin:
+          existingSecret: grafana          # created by hand: keys admin-user / admin-password
+          userKey: admin-user
+          passwordKey: admin-password
+        grafana.ini:
+          server:
+            root_url: "http://localhost:3000"
+          users:
+            default_theme: dark
+        datasources:
+          datasources.yaml:
+            apiVersion: 1
+            datasources:
+              - name: Prometheus
+                type: prometheus
+                access: proxy
+                url: http://prometheus-server.monitoring.svc.cluster.local:80
+                isDefault: true
+              - name: Loki
+                type: loki
+                access: proxy
+                url: http://loki.monitoring.svc.cluster.local:3100
+        resources:
+          requests: { cpu: 50m, memory: 96Mi }
+          limits: { memory: 256Mi }
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: grafana
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

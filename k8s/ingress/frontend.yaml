@@ -1,7 +1,7 @@
 # Host-less Ingress exposing the frontend through the Traefik `web` entrypoint (NodePort 30001 ->
 # socat localhost:8080). This IS the AWS ALB :80 listener. Lives OUTSIDE charts/nimbus-app on
 # purpose (repo convention: charts render workloads, Ingress glue lives in an ingress/ dir and is
-# synced by its own git-directory Application — see k8s/monitoring/ingress + monitoring-ingress).
+# synced by its own git-directory Application — see k8s/ingress + k8s/applications/ingress.yaml).
 # Backend = the frontend Service :8080 (nginx). All /api/* fan-out happens inside nginx, so only the
 # frontend is exposed; service-a/service-b stay ClusterIP-internal.
 apiVersion: networking.k8s.io/v1

@@ -5,7 +5,7 @@ image and everything in git (PLAN.md, commands.md, scripts/, k8s/, vms/*/). Rebu
 1→N commands in `commands.md`.
 
 > Everything we built *inside* the cluster (RKE2, Traefik override, ArgoCD + the fragile cluster
-> secret, Prometheus/Loki) lives on the VM disks — destroying the VMs destroys all of it. The git repo
+> secret, Prometheus/Loki/Grafana) lives on the VM disks — destroying the VMs destroys all of it. The git repo
 > is untouched, so a rebuild is just re-running the logged commands.
 
 Run on the WSL host.
@@ -47,6 +47,5 @@ A rebuild re-adds the current three with `zsh .../vms/net-reservations.sh` (no a
 cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/registry && docker compose down -v
 ```
 
-```bash
-cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/host-grafana && docker compose down -v
-```
+Grafana now runs inside the cluster (ArgoCD app `grafana`), so it is destroyed with the VMs — there is no
+host Grafana container any more.

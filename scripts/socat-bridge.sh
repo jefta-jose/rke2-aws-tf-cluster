@@ -36,6 +36,7 @@ FORWARDS="
 9069 ${AGENT_IP} 30003 argocd
 8025 ${AGENT_IP} 30004 mailpit-ui
 1025 ${AGENT_IP} 30005 mailpit-smtp
+3000 ${AGENT_IP} 30006 grafana
 6444 ${APISERVER_IP} 6443 kube-api
 "
 
@@ -70,4 +71,4 @@ echo "$FORWARDS" | while read -r host_port target_ip target_port label; do
   printf '  [%s] %-13s localhost:%-5s -> %s:%s\n' "$role" "$label" "$host_port" "$target_ip" "$target_port"
 done
 echo "--- host ports now listening ---"
-ss -ltnp 2>/dev/null | grep -E ':(8080|3100|9090|9069|8025|1025|6444)\b' || echo "(none up yet — check ${LOG_DIR}/nimbus-socat-*.log)"
+ss -ltnp 2>/dev/null | grep -E ':(8080|3100|9090|9069|8025|1025|3000|6444)\b' || echo "(none up yet — check ${LOG_DIR}/nimbus-socat-*.log)"

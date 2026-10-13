@@ -1,0 +1,30 @@
+# Every Traefik Ingress for the lab (frontend, Prometheus, Loki, ...) as plain manifests. A git-directory
+# Application — syncs every manifest under k8s/ingress/ to the in-cluster cluster. Each Ingress file sets
+# its own metadata.namespace (default / monitoring / ...), so one Application covers all of them; the
+# destination namespace below is only the fallback.
+# CONVENTION: Helm chart apps render ONLY their workload; the Traefik Ingress that exposes each service
+# lives in k8s/ingress/ with one known-good host-less pattern (entrypoint annotation + path, no Host
+# header) instead of each chart's ingress quirks. Expose another service by dropping its Ingress YAML
+# into k8s/ingress/ — this app picks it up.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ingress
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
+    targetRevision: main
+    path: k8s/ingress
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

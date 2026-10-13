@@ -2,7 +2,7 @@
 #
 # Upstream install.yaml creates argocd-server with ports http(80) and https(443) -> targetPort 8080.
 # We replace that with a single http port 9069 -> targetPort 8080, so the Traefik `argocd`
-# entrypoint (which forwards to Service port 9069, per k8s/traefik + the argocd Ingress) lands on it.
+# entrypoint (which forwards to Service port 9069, per k8s/bootstrap/traefik + the argocd Ingress) lands on it.
 # Applying this over the installed Service updates its ports in place (same name/selector).
 apiVersion: v1
 kind: Service

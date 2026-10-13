@@ -1,4 +1,4 @@
-# k8s/traefik/helmchartconfig.yaml
+# k8s/bootstrap/traefik/helmchartconfig.yaml
 #
 # Reshape RKE2's PACKAGED Traefik (chart "rke2-traefik") into the Nimbus ingress config.
 #
@@ -12,7 +12,8 @@
 #   * service.type: NodePort        -- a cloud cluster gets a LoadBalancer from the cloud-controller;
 #                                      we have no cloud LB, the socat "ALB" forwards to NodePorts, so
 #                                      NodePort is REQUIRED. THE key adaptation.
-#   * dropped two app-specific entrypoints (30006/30007) -- not needed in Nimbus scope.
+#   * dropped two app-specific entrypoints -- not needed in Nimbus scope. (30006 is now reused by the
+#                                      `grafana` entrypoint added for the in-cluster Grafana, PLAN Phase 8.)
 #   * mailhog/mailhog-smtp renamed  -> mailpit/mailpit-smtp (PLAN names; mailpit is the tool). Ports
 #                                      (30004/30005) unchanged.
 #   * dropped the correlation-id Middleware/plugin -- app-specific Traefik plugin, out of scope.
@@ -24,20 +25,21 @@
 # Routing: services are exposed with plain Kubernetes `Ingress` objects (the chart's kubernetesIngress
 # provider, enabled by default), each bound to its entrypoint via the annotation
 # `traefik.ingress.kubernetes.io/router.entrypoints: <name>` + `ingressClassName: traefik`
-# (see k8s/monitoring/ingress/*.yaml and k8s/argocd/install/06_argocd-ingress.yaml). The ONLY
+# (see k8s/ingress/*.yaml and k8s/bootstrap/argocd/06_argocd-ingress.yaml). The ONLY
 # IngressRoute CRD is Traefik's own dashboard, below.
 #
 # Entrypoint -> NodePort -> socat "ALB" host port (PLAN.md table):
 #   web        30001  localhost:8080     loki     30000  localhost:3100
 #   prometheus 30002  localhost:9090     argocd   30003  localhost:9069
 #   mailpit    30004  localhost:8025     mailpit-smtp 30005 localhost:1025
+#   grafana    30006  localhost:3000
 #
 # For NEW entrypoints `port` is the container port Traefik binds (we keep the "pretty" numbers,
 # all >1024 so the non-root hardened image can bind them). For the built-in `web` we only pin its
 # nodePort and leave the chart's default container port (:8000) alone (80 would need privilege).
 # socat targets the NodePort, so the Service port value is irrelevant to the "ALB" wiring.
 #
-# Apply:  kubectl apply -f k8s/traefik/helmchartconfig.yaml
+# Apply:  kubectl apply -f k8s/bootstrap/traefik/helmchartconfig.yaml
 # Watch:  kubectl -n kube-system get pods -l job-name=helm-install-rke2-traefik -w
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
@@ -92,6 +94,12 @@ spec:
           default: true
         nodePort: 30005
         protocol: TCP          # raw TCP; routed later with an IngressRouteTCP (Phase 9.4, optional)
+      grafana:
+        port: 3000
+        expose:
+          default: true
+        nodePort: 30006
+        protocol: TCP
 
     # --- logs: quiet general log + JSON access log, dropping credential fields ---
     logs:

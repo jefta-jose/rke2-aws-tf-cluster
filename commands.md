@@ -20,6 +20,28 @@ vCPU overcommits safely; RAM is the only hard limit, so this stays well clear of
 
 ---
 
+## `k8s/` layout (one folder per kind of thing)
+
+```
+k8s/
+├── bootstrap/      applied ONCE by hand with kubectl; not GitOps-managed
+│   ├── root.yaml       the app-of-apps root (Application `nimbus-root`)
+│   ├── argocd/         ArgoCD customizations (cmd-params, server Service, UI Ingress)
+│   └── traefik/        HelmChartConfig that reshapes RKE2's packaged Traefik
+├── applications/   ArgoCD Application CRs, one flat file per app — `nimbus-root` watches this dir
+└── ingress/        every Traefik Ingress (frontend, prometheus, loki, ...), synced by the `ingress` app
+```
+
+Rule of thumb: `bootstrap/` is what you apply yourself; everything else is synced by ArgoCD from git.
+
+> **Migration note (pending until you push):** the running `nimbus-root` was applied by hand and still
+> points at the old `k8s/argocd/applications/children` path. After `git push`, re-apply the root once:
+> `kubectl apply -f k8s/bootstrap/root.yaml`. The old `monitoring-ingress` + `apps-ingress` apps are
+> replaced by a single `ingress` app, so the three Ingresses are deleted and recreated — expect
+> `localhost:8080` / `:9090` / `:3100` to return 404 for a few seconds to a minute, then recover.
+
+---
+
 ## Phase 0 — clean slate (2026-10-07)
 
 Host already bare: no lab VMs (`virsh list --all` empty), no `~/.kube/config`, libvirt
@@ -165,13 +187,25 @@ Build and join the workers **one at a time** (build → join → verify before t
 zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-1 192.168.122.21 52:54:00:a1:b1:21 4 3584 30
 
 scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.21:/tmp/
+scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/registries.yaml ubuntu@192.168.122.21:/tmp/
 ssh ubuntu@192.168.122.21
 sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-1 192.168.122.21 192.168.122.11
+# Trust the host-local registry over plain HTTP (ECR stand-in) BEFORE first start, so containerd
+# generates certs.d/192.168.122.1:5000/hosts.toml with the http mirror at startup (no restart).
+sudo install -D -o root -g root -m 0644 /tmp/registries.yaml /etc/rancher/rke2/registries.yaml
 curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
 sudo systemctl enable --now rke2-agent.service
 ```
 
 Expect 2 nodes Ready (1 `control-plane,etcd` + 1 worker) once you can see the cluster (kubeconfig step).
+
+> **Registry trust (why this line matters).** Without `/etc/rancher/rke2/registries.yaml`, containerd
+> has no mirror for `192.168.122.1:5000` and defaults to **HTTPS** → `http: server gave HTTP response
+> to HTTPS client` when pulling `192.168.122.1:5000/nimbus/*`. containerd 2.x does **not** inline the
+> mirror in `config.toml`; RKE2 writes it to `certs.d/192.168.122.1:5000/hosts.toml`. If the agent is
+> already running when you add the file, run `sudo systemctl restart rke2-agent` to regenerate it.
+> Verify: `sudo cat /var/lib/rancher/rke2/agent/etc/containerd/certs.d/192.168.122.1:5000/hosts.toml`
+> shows a `[host."http://192.168.122.1:5000/v2"]` block with `capabilities = ["pull", "resolve"]`.
 
 ### 3.2 — build + join nimbus-agent-2
 
@@ -181,8 +215,11 @@ The identical join recipe with agent-2's name / IP / MAC:
 zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-2 192.168.122.22 52:54:00:a1:b1:22 4 3584 30
 
 scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.22:/tmp/
+scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/registries.yaml ubuntu@192.168.122.22:/tmp/
 ssh ubuntu@192.168.122.22
 sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-2 192.168.122.22 192.168.122.11
+# same registry-trust step as agent-1 (see the note under 3.1)
+sudo install -D -o root -g root -m 0644 /tmp/registries.yaml /etc/rancher/rke2/registries.yaml
 curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
 sudo systemctl enable --now rke2-agent.service
 ```
@@ -269,12 +306,12 @@ the RKE2-native equivalent of a standalone `helm upgrade traefik -f <values>.yml
 RKE2's helm-controller watches for a `HelmChartConfig` of the SAME name/namespace as a packaged
 chart and re-runs the install with its `valuesContent` deep-merged over the chart defaults. Our values
 set named entrypoints, a NodePort service, metrics, JSON access logs, and the dashboard — minus any
-app-specific entrypoints or plugins we don't need. File: `k8s/traefik/helmchartconfig.yaml`.
+app-specific entrypoints or plugins we don't need. File: `k8s/bootstrap/traefik/helmchartconfig.yaml`.
 
 ```bash
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
 
-kubectl apply -f /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/k8s/traefik/helmchartconfig.yaml
+kubectl apply -f /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/k8s/bootstrap/traefik/helmchartconfig.yaml
 
 kubectl -n kube-system get pods -l job-name=helm-install-rke2-traefik -w
 ```
@@ -292,22 +329,6 @@ Also note: do **not** set `globalArguments` in the override — Helm *replaces* 
 would wipe the chart's own default flags. We route with IngressRoute CRDs, so the single
 `ingressendpoint.ip` flag (for the kubernetesIngress provider) isn't needed.
 
-### 5.2 — verify
-
-```bash
-kubectl -n kube-system get svc rke2-traefik -o jsonpath='{.spec.type}{"\n"}{range .spec.ports[*]}{.name}{"\t"}{.port}{"\t->node:"}{.nodePort}{"\n"}{end}'
-kubectl -n kube-system get pod -l app.kubernetes.io/name=rke2-traefik -o wide
-for p in 8080 3100 9090 9069 8025; do echo -n "localhost:$p -> "; curl -s -o /dev/null -w "%{http_code}\n" "http://localhost:$p/" --max-time 4; done
-```
-
-Result: Service **NodePort**; entrypoints `web`->30001, `loki`->30000, `prometheus`->30002,
-`argocd`->30003, `mailpit`->30004, `mailpit-smtp`->30005 (websecure got an auto 31906 — harmless).
-Traefik pod on **one of the two workers** (the server taint keeps it off the control-plane node); the
-socat ALB points at `nimbus-agent-1` and NodePorts answer on every node, so it's reachable regardless
-of which worker runs it. All five curls returned **404** = Traefik answering through the full
-chain `localhost:<port>` → socat → agent NodePort → kube-proxy → Traefik pod. (404 = no IngressRoute
-matches yet; backends come in Phases 6–9.)
-
 ---
 
 ## Phase 6 — ArgoCD (GitOps)
@@ -316,7 +337,7 @@ matches yet; backends come in Phases 6–9.)
 
 RKE2 ships nothing for ArgoCD, so we install upstream, **pinned to v2.12.3**. That pinned
 `install.yaml` is the stock upstream manifest; we apply it from the pinned URL rather than vendoring
-the 1.2 MB blob, then layer three small customizations (`k8s/argocd/install/`):
+the 1.2 MB blob, then layer three small customizations (`k8s/bootstrap/argocd/`):
 
 ```bash
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
@@ -326,9 +347,9 @@ kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 kubectl -n argocd rollout status deploy/argocd-server --timeout=360s
 
-kubectl apply -f k8s/argocd/install/argocd-cmd-params-cm.yaml
-kubectl apply -f k8s/argocd/install/argocd-server-service.yaml
-kubectl apply -f k8s/argocd/install/06_argocd-ingress.yaml
+kubectl apply -f k8s/bootstrap/argocd/argocd-cmd-params-cm.yaml
+kubectl apply -f k8s/bootstrap/argocd/argocd-server-service.yaml
+kubectl apply -f k8s/bootstrap/argocd/06_argocd-ingress.yaml
 kubectl -n argocd rollout restart deploy/argocd-server
 kubectl -n argocd rollout status deploy/argocd-server --timeout=180s
 ```
@@ -373,14 +394,14 @@ workers are small, so Prometheus/Loki are tuned tiny.
 
 ### 7.0 — app-of-apps root (the deferred 6.2)
 
-`k8s/argocd/applications/root.yaml` = Application `nimbus-root`: watches `.../children/` in git
+`k8s/bootstrap/root.yaml` = Application `nimbus-root`: watches `k8s/applications/` in git
 (recurse), destination in-cluster/argocd (where Application CRs must live), automated+prune+selfHeal.
 Bootstrap ONCE by hand; self-managing after (commit a child manifest -> ArgoCD creates the app).
 
 ```bash
 git add k8s/ && git commit -m "..." && git push
 export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-kubectl apply -f k8s/argocd/applications/root.yaml
+kubectl apply -f k8s/bootstrap/root.yaml
 argocd app get nimbus-root
 ```
 
@@ -393,7 +414,7 @@ are plain manifests owned by the ingress app, so all the "expose it" wiring is i
 
 ### 7.1 — Prometheus child app (tiny)
 
-`k8s/argocd/applications/children/prometheus.yaml` = Application: chart
+`k8s/applications/prometheus.yaml` = Application: chart
 `prometheus-community/prometheus` **29.36.0** (Prometheus v3.15.0), destination **in-cluster**
 (`https://kubernetes.default.svc`), ns `monitoring`. Values: alertmanager + pushgateway off; server
 emptyDir + 6h retention (RKE2 has no default StorageClass); node-exporter `tolerations: [{operator:
@@ -407,7 +428,7 @@ Result: `monitoring` has `prometheus-server` (2/2: server + config-reload), `kub
 
 ### 7.2 — Loki child app (tiny)
 
-`k8s/argocd/applications/children/loki.yaml` = Application: chart `grafana/loki-stack` **2.10.3**
+`k8s/applications/loki.yaml` = Application: chart `grafana/loki-stack` **2.10.3**
 (Loki 2.9.3 single-binary + Promtail DaemonSet), destination **in-cluster**, ns `monitoring`. Values:
 Loki filesystem storage, persistence off (emptyDir); Promtail DaemonSet with a blanket toleration so it
 also ships logs from the tainted server (we want etcd/kube-proxy/canal errors visible in Phase 11); the
@@ -419,12 +440,12 @@ disabled to fit a tiny node. No Ingress in the chart — see 7.3.
 Result: `monitoring` gains `loki-0` plus a `loki-promtail` pod per node. Once 7.3 is synced, reachable
 through the ALB (`curl localhost:3100/ready` -> `ready`).
 
-### 7.3 — monitoring-ingress child app (the shared ingress glue)
+### 7.3 — ingress child app (the shared ingress glue)
 
-`k8s/argocd/applications/children/monitoring-ingress.yaml` = a **directory** Application syncing every
-plain manifest under `k8s/monitoring/ingress/` into ns `monitoring`. Currently `prometheus.yaml`
-(Ingress -> entrypoint `prometheus` -> `prometheus-server:80`) and `loki.yaml` (Ingress -> entrypoint
-`loki` -> `loki:3100`). Convention: chart apps render workloads; each service's host-less Traefik
+`k8s/applications/ingress.yaml` = a **directory** Application (`ingress`) syncing every
+plain manifest under `k8s/ingress/` (each sets its own namespace). Currently `prometheus.yaml`
+(Ingress -> entrypoint `prometheus` -> `prometheus-server:80`), `loki.yaml` (Ingress -> entrypoint
+`loki` -> `loki:3100`) and `frontend.yaml` (entrypoint `web` -> `frontend:8080`). Convention: chart apps render workloads; each service's host-less Traefik
 Ingress is a plain manifest here, one pattern for all (annotation
 `traefik.ingress.kubernetes.io/router.entrypoints: <name>` + `ingressClassName: traefik`). Add a
 service's entrypoint later by dropping its Ingress YAML into that directory — this app picks it up.
@@ -442,39 +463,77 @@ Gotchas:
 - We deliberately keep each Ingress OUT of its chart. Prometheus' chart would carry it via
   `extraManifests`, whose items must be STRINGS (rendered through `tpl`; a YAML map errors with
   `wrong type for value; expected string; got map`) — keeping ingresses as plain manifests in
-  `k8s/monitoring/ingress/` sidesteps that and puts all the glue in one place.
+  `k8s/ingress/` sidesteps that and puts all the glue in one place.
 
 ---
 
-## Phase 8 — Grafana on the WSL host (docker compose)
+## Phase 8 — Grafana in-cluster, managed by ArgoCD (POC of the real Rok setup)
 
-Grafana runs **outside** the cluster, as a host docker-compose in `host-grafana/`, reading Prometheus +
-Loki **through the socat "ALB"** (`localhost:9090` / `localhost:3100`) — never touching the cluster API.
-This mirrors a central Grafana reading a cluster it doesn't live in, over the load balancer.
+> **STATUS: written, NOT YET RUN.** Mark each step with its real result once you run it (this file logs
+> only what worked).
+
+Grafana now runs **in the cluster**, deployed by ArgoCD the way the real Rok Grafana is (chart
+`grafana/grafana` **8.10.1** = Grafana 11.5.2, release `grafana`, **namespace `grafana`**). The old
+host docker-compose Grafana (`host-grafana/`) is removed. Deliberate differences from real Rok:
+persistence off (emptyDir; real = `ebs-sc` PVC), no Azure AD/SMTP, datasources provisioned in values
+(real = UI), Traefik host-less Ingress (real = nginx + cert-manager TLS).
+
+### 8.1 — create the namespace + admin Secret by hand (never in git)
+
+The repo is public, so credentials never go in a manifest — same idea as the real `grafana-secret`.
+Create these BEFORE the push so the pod finds its Secret on first start:
 
 ```bash
-cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/host-grafana && docker compose up -d
+export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
+
+kubectl create namespace grafana
+kubectl -n grafana create secret generic grafana \
+  --from-literal=admin-user=admin \
+  --from-literal=admin-password="$(openssl rand -base64 18)"
 ```
 
-Open `http://localhost:3000` (admin / admin). Datasources are provisioned, so no clicking — Prometheus
-(default) + Loki show up under Connections. Verify from the host:
+### 8.2 — expose it: add the `grafana` Traefik entrypoint, then the socat forward
+
+`k8s/bootstrap/traefik/helmchartconfig.yaml` gained a `grafana` entrypoint (port 3000, NodePort 30006).
+It is a bootstrap file, so you apply it. Traefik restarts briefly (the 8080/9090/3100 routes blip for a
+few seconds):
 
 ```bash
+kubectl apply -f /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/k8s/bootstrap/traefik/helmchartconfig.yaml
+kubectl -n kube-system get pods -l job-name=helm-install-rke2-traefik -w
+kubectl -n kube-system get svc rke2-traefik -o jsonpath='{range .spec.ports[*]}{.name}{"\t->node:"}{.nodePort}{"\n"}{end}'
+
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/socat-bridge.sh
+```
+
+Expect `grafana -> node:30006` in the Service ports and `localhost:3000` listening.
+
+### 8.3 — deploy via ArgoCD (GitOps)
+
+`k8s/applications/grafana.yaml` (the Application) and `k8s/ingress/grafana.yaml` (the Ingress, synced by
+the `ingress` app) are committed; ArgoCD reads GitHub, not your working tree:
+
+```bash
+git add -A && git commit -m "grafana via argocd" && git push
+argocd app get grafana --refresh
+kubectl -n grafana get pods
+```
+
+### 8.4 — log in and verify
+
+```bash
+kubectl -n grafana get secret grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
 curl -s -o /dev/null -w "grafana: %{http_code}\n" http://localhost:3000/api/health --max-time 5
-docker logs nimbus-grafana 2>&1 | grep -iE 'datasource|error' | tail
 ```
+
+Open `http://localhost:3000` (user `admin`, password from the command above). Under Connections ->
+Data sources, **Prometheus** (default) and **Loki** should test green — they point at the in-cluster
+Services `prometheus-server.monitoring.svc:80` and `loki.monitoring.svc:3100`, not the socat ports.
 
 Key points:
-- Published with a normal `ports: ["3000:3000"]` bridge mapping (same as `registry/`), reachable at
-  `localhost:3000`. **Do NOT use `network_mode: host`** — with Docker Desktop the container shares the
-  Docker VM's net, not the WSL host's, so `:3000` listens inside the container but never surfaces on the
-  WSL host (the exact "it's up but I can't reach it" trap).
-- Datasources reach the host's socat forwards via **`host.docker.internal`** (`extra_hosts:
-  host.docker.internal:host-gateway`), NOT `localhost` — inside the container `localhost` is the
-  container. They go green once `socat-bridge.sh` is up and Prometheus/Loki are running (Phase 7).
-- State persists in the named volume `nimbus-grafana-data`; `docker compose down -v` wipes it.
-- Add dashboards by dropping JSON into `host-grafana/provisioning/dashboards/`, or import by ID in the
-  UI (e.g. 1860 node-exporter, 3662 Prometheus stats).
+- State is `emptyDir`: a pod restart resets anything created only in the UI. That is intentional — the
+  next step tracks a dashboard + alert rule in git so they survive.
+- Add dashboards/alerts later via git (deferred step); nothing is clicked together by hand.
 
 ---
 

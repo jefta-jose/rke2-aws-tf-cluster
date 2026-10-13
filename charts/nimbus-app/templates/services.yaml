@@ -2,7 +2,7 @@
 One ClusterIP Service per workload with service.enabled. Names match the Deployment ($w.name), so
 the frontend's nginx reaches them at service-a:8080 / service-b:8080 and the Ingress targets
 frontend:8080. service-a/service-b stay internal (ClusterIP) — only the frontend is exposed, via
-the host-less Traefik Ingress in k8s/apps/ingress/.
+the host-less Traefik Ingress in k8s/ingress/.
 */}}
 {{- range $component, $w := .Values.workloads }}
 {{- if and $w.enabled $w.service.enabled }}

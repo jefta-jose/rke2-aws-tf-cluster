@@ -8,10 +8,10 @@
 # - Loki: filesystem storage, persistence off (emptyDir — RKE2 has no default StorageClass), tiny.
 # - Promtail: DaemonSet with a blanket toleration so it ALSO collects logs from the tainted servers
 #   (we want etcd/kube-proxy/canal errors visible in Phase 11). loki-stack auto-points it at the loki svc.
-# - Grafana/Prometheus subcharts OFF (Grafana runs on the host in Phase 8; Prometheus is its own app).
+# - Grafana/Prometheus subcharts OFF (Grafana is its own app, Phase 8; Prometheus is its own app).
 #
 # Exposure (host-less Ingress on the Traefik `loki` entrypoint) is a separate child app
-# (monitoring-ingress) sourcing k8s/monitoring/ingress/. Destination = in-cluster (kubernetes.default.svc).
+# (the `ingress` app) sourcing k8s/ingress/. Destination = in-cluster (kubernetes.default.svc).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
