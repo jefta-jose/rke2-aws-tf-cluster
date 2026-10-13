@@ -653,8 +653,8 @@ kubectl -n nimbus get pod -l app=service-a -o jsonpath='{range .items[*]}{.metad
 
 ## Phase 10 — manage Grafana via git (dashboards + alert rules as code)
 
-> **STATUS: in progress. Steps below are written but NOT YET RUN** — fill in each real result once it
-> works (this file logs only what worked).
+> **STATUS: in progress.** 10.1 is done. 10.2/10.3 are written but NOT YET RUN — fill in each real
+> result once it works (this file logs only what worked).
 
 Idea: the Grafana chart can run **sidecar containers** that watch Kubernetes for ConfigMaps carrying a
 label and load them into Grafana. So: file in git -> ArgoCD syncs a labelled ConfigMap -> sidecar sees it ->
@@ -680,6 +680,39 @@ kubectl -n grafana get pods -w
 kubectl -n grafana get pod -l app.kubernetes.io/name=grafana -o jsonpath='{range .items[0].spec.containers[*]}{.name}{"\n"}{end}'
 ```
 
-Expect: the pod is replaced (rolling update), `3/3` Ready, containers `grafana-sc-alerts`,
-`grafana-sc-dashboard`, `grafana`. Also `kubectl get clusterrole grafana-clusterrole` now exists (the
-sidecars need cluster-wide read on ConfigMaps since they watch ALL namespaces).
+Result: the pod was replaced by a rolling update (`grafana-56f5d857b4-…`), `3/3` Running, 0 restarts,
+containers `grafana-sc-alerts`, `grafana-sc-dashboard`, `grafana`. (The chart also adds a ClusterRole so the
+sidecars can read ConfigMaps in ALL namespaces.) Gotcha: `argocd` CLI needs a fresh login first, and the
+change reaches Grafana in two hops (root app syncs the changed Application, then `grafana` re-renders).
+
+### 10.2 + 10.3 — a node-health dashboard, an alert rule and a Teams contact point, all from git
+
+> NOT YET RUN.
+
+New files: `k8s/grafana/` and `k8s/applications/grafana-content.yaml`:
+- `kustomization.yaml` — a `configMapGenerator` wraps two files into ConfigMaps in namespace `grafana`:
+  `dashboards/nimbus-node-health.json` (label `grafana_dashboard: "1"`, annotation `grafana_folder: Nimbus`)
+  and `alerting/nimbus-alerting.yaml` (label `grafana_alert: "1"`). Hash suffixes off = stable names.
+- `alerting/nimbus-alerting.yaml` — contact point `nimbus-teams` (type `teams`, url `dummy-webhook-url`) and
+  rule group `Nimbus Node Health` / rule **Node not Ready**: query `kube_node_status_condition{condition="Ready",status="true"}`
+  -> Reduce(last) -> Threshold `< 1`, `for 2m`, noData/execErr = Alerting, routed to `nimbus-teams`. No
+  `or vector(0)`: a missing metric must show as No data, not as healthy.
+- `grafana-content.yaml` — Application syncing `k8s/grafana/` (ServerSideApply for big dashboard JSON).
+- `k8s/applications/grafana.yaml` — datasources now have fixed uids `prometheus` / `loki` (this rolls the
+  Grafana pod once), so the JSON/YAML in git can reference them.
+
+Preview what ArgoCD will apply (read-only): `kubectl kustomize k8s/grafana`
+
+```bash
+git add -A && git commit -m "grafana content from git: node-health dashboard + alert + teams contact point" && git push
+argocd app get nimbus-root --refresh | head -12
+argocd app get grafana --refresh | head -12
+argocd app get grafana-content --refresh | head -12
+kubectl -n grafana get cm -l grafana_dashboard=1
+kubectl -n grafana get cm -l grafana_alert=1
+kubectl -n grafana logs deploy/grafana -c grafana-sc-alerts --tail=20
+```
+
+Verify in the UI (`http://localhost:3000`): Dashboards -> folder **Nimbus** -> "Nimbus - Node Health";
+Alerting -> Alert rules -> **Node not Ready** (state Normal, 3 nodes); Alerting -> Contact points ->
+**nimbus-teams** (provisioned, read-only).

@@ -332,9 +332,13 @@ Kubernetes for labelled ConfigMaps and load them as dashboards / alert rules. Pa
 syncs a ConfigMap → sidecar sees it → Grafana loads it. Delete the file → it disappears from Grafana.
 - 10.1 Enable the dashboard sidecar (`grafana_dashboard`) and alert sidecar (`grafana_alert`) in
   `k8s/applications/grafana.yaml`; push; confirm the pod now runs 3 containers.
-- 10.2 `k8s/grafana/` (kustomize turns a dashboard JSON into a labelled ConfigMap) + a `grafana-content`
-  Application; add one dashboard; push; it appears in Grafana.
-- 10.3 Add one alert rule (and the contact point it routes to) the same way.
+- 10.2 Content from git: `k8s/grafana/` (kustomize turns plain files into labelled ConfigMaps) + a
+  `grafana-content` Application. One **node-health dashboard** (Nodes Ready, pressure conditions, per-node
+  Ready timeline, CPU/memory) in folder `Nimbus`; datasources get fixed uids (`prometheus`, `loki`).
+- 10.3 One **alert rule** ("Node not Ready", kube-state-metrics, noData/execErr = Alerting) + a **Teams
+  contact point** `nimbus-teams` with a placeholder webhook `dummy-webhook-url` (delivery fails on purpose; a
+  real webhook is a secret and never goes in this public repo). The rule routes to it via rule-level
+  `notification_settings`, the same way the real Rok rules do.
 - 10.4 Change the rule threshold in git → watch it change; delete the file → watch it vanish (prune);
   edit in the UI → see provisioned objects are read-only / drift is reverted.
 - 10.5 Export an existing UI-built rule into the repo format (the real-Rok migration step).

@@ -1,0 +1,66 @@
+# Grafana alerting provisioning file, loaded by the alert sidecar (PLAN Phase 10.3).
+# Holds a contact point AND the alert rule that uses it. Delivered as a ConfigMap by kustomize
+# (k8s/grafana/kustomization.yaml); the sidecar writes it into /etc/grafana/provisioning/alerting.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: nimbus-teams
+    receivers:
+      - uid: nimbus-teams
+        type: teams
+        # PLACEHOLDER on purpose: delivery will fail ("unsupported protocol scheme") and show as an error on
+        # the contact point. That still proves the whole git -> rule -> firing -> notify path.
+        # A REAL webhook is a secret: never commit it to this public repo (create it by hand instead).
+        settings:
+          url: dummy-webhook-url
+        disableResolveMessage: false
+
+groups:
+  - orgId: 1
+    name: Nimbus Node Health
+    folder: Nimbus
+    interval: 1m
+    rules:
+      - uid: nimbus-node-not-ready
+        title: Node not Ready
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: kube_node_status_condition{condition="Ready",status="true"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              expression: A
+              reducer: last
+              settings: { mode: dropNN }
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: B
+              conditions:
+                - evaluator: { type: lt, params: [1] }   # value 1 = Ready, 0 = NotReady
+        for: 2m
+        noDataState: Alerting
+        execErrState: Alerting
+        isPaused: false
+        labels:
+          severity: critical
+          cluster: nimbus
+        annotations:
+          summary: "Node {{ $labels.node }} is not Ready"
+          description: "kube_node_status_condition Ready=true is below 1 for node {{ $labels.node }} (lab alert provisioned from git, PLAN Phase 10)."
+        notification_settings:
+          receiver: nimbus-teams
+          repeat_interval: 1h

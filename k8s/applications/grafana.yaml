@@ -45,11 +45,13 @@ spec:
             apiVersion: 1
             datasources:
               - name: Prometheus
+                uid: prometheus          # fixed uid so dashboards/alert rules in git can reference it
                 type: prometheus
                 access: proxy
                 url: http://prometheus-server.monitoring.svc.cluster.local:80
                 isDefault: true
               - name: Loki
+                uid: loki
                 type: loki
                 access: proxy
                 url: http://loki.monitoring.svc.cluster.local:3100
