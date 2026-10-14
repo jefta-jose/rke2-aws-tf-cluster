@@ -3,6 +3,10 @@
 #   grafana_dashboard: "1"  -> dashboard sidecar;  annotation grafana_folder = Grafana folder name
 #   grafana_alert: "1"      -> alert sidecar (contact points + alert rules)
 # Hash suffixes are off so the ConfigMap names are stable (an edited file updates the same object).
+#
+# ONE ConfigMap PER FILE (ConfigMaps are capped at 1 MiB, so a growing pile of dashboards must not share one).
+# A file that is NOT listed below is silently ignored -- scripts/check-grafana-content.sh catches that.
+# Recipes: README.md in this folder.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: grafana
@@ -11,17 +15,28 @@ generatorOptions:
   disableNameSuffixHash: true
 
 configMapGenerator:
-  - name: grafana-dashboard-nimbus-node-health
-    files:
-      - dashboards/nimbus-node-health.json
+  # ---- dashboards (folder = annotation grafana_folder) ----
+  - name: grafana-dashboard-node-health
+    files: [dashboards/node-health.json]
     options:
-      labels:
-        grafana_dashboard: "1"
-      annotations:
-        grafana_folder: Nimbus
-  - name: grafana-alerts-nimbus
-    files:
-      - alerting/nimbus-alerting.yaml
+      labels: { grafana_dashboard: "1" }
+      annotations: { grafana_folder: Nimbus }
+  - name: grafana-dashboard-client-cert-expiry
+    files: [dashboards/client-cert-expiry.json]
     options:
-      labels:
-        grafana_alert: "1"
+      labels: { grafana_dashboard: "1" }
+      annotations: { grafana_folder: Nimbus }
+
+  # ---- alerting: contact points first, then rule groups that reference them ----
+  - name: grafana-alerts-contact-points
+    files: [alerting/contact-points.yaml]
+    options:
+      labels: { grafana_alert: "1" }
+  - name: grafana-alerts-node-health
+    files: [alerting/node-health.yaml]
+    options:
+      labels: { grafana_alert: "1" }
+  - name: grafana-alerts-client-cert-expiry
+    files: [alerting/client-cert-expiry.yaml]
+    options:
+      labels: { grafana_alert: "1" }

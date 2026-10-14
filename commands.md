@@ -73,7 +73,7 @@ curl -s http://localhost:5000/v2/
 Fixed MAC→IP reservations on the libvirt `default` net (run once):
 
 ```bash
-
+cd ../
 zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/net-reservations.sh
 
 ```
@@ -87,6 +87,9 @@ zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-ser
 
 virsh -c qemu:///system net-dhcp-leases default
 
+sleep 25
+
+ssh-keygen -f '/home/jeffndegwa/.ssh/known_hosts' -R '192.168.122.11'
 ssh -o StrictHostKeyChecking=accept-new ubuntu@192.168.122.11 'hostname; ip -4 -br a; nproc'
 ```
 
@@ -112,7 +115,7 @@ At the `ubuntu@nimbus-server-1` prompt — config (cluster-init = no join IP) �
 ```bash
 sudo bash /tmp/write-rke2-server-config.sh nimbus-server-1 192.168.122.11
 
-curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
+curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_VERSION=v1.37.1+rke2r1 sh -
 
 sudo systemctl enable --now rke2-server.service
 
@@ -139,15 +142,13 @@ Result: `nimbus-server-1` **Ready**, roles `control-plane,etcd`. First etcd memb
    via `kubectl` AFTER the workers exist (Phase 3).
 
 The version pin matters: the `stable` channel API lookup 404'd (`using stable as release` →
-`releases/download/stable/...` 404), so `INSTALL_RKE2_VERSION=v1.36.5+rke2r1` is pinned explicitly.
+`releases/download/stable/...` 404), so `INSTALL_RKE2_VERSION=v1.37.1+rke2r1` is pinned explicitly.
 The `curl | sh` install is only a ~65 MB tarball fetch+unpack (seconds); the real time is the
 component **image pulls at first `systemctl start`**.
 
 ### 2.5 — inspect etcd (single member)
 
 ```bash
-ssh ubuntu@192.168.122.11
-
 sudo rke2 etcd-snapshot save --name phase2-baseline
 
 sudo rke2 etcd-snapshot list
@@ -162,7 +163,9 @@ host-only `client.crt`, which belongs to the apiserver and isn't mounted into et
 scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/etcdctl.sh ubuntu@192.168.122.11:/tmp/
 
 ssh ubuntu@192.168.122.11
+```
 
+```bash
 sudo bash /tmp/etcdctl.sh member list -w table
 sudo bash /tmp/etcdctl.sh endpoint status --cluster -w table
 sudo bash /tmp/etcdctl.sh endpoint health --cluster
@@ -186,26 +189,23 @@ Build and join the workers **one at a time** (build → join → verify before t
 ```bash
 zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-1 192.168.122.21 52:54:00:a1:b1:21 4 3584 30
 
+sleep 25
+ssh-keygen -f '/home/jeffndegwa/.ssh/known_hosts' -R '192.168.122.21'
+
 scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.21:/tmp/
 scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/registries.yaml ubuntu@192.168.122.21:/tmp/
 ssh ubuntu@192.168.122.21
-sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-1 192.168.122.21 192.168.122.11
-# Trust the host-local registry over plain HTTP (ECR stand-in) BEFORE first start, so containerd
-# generates certs.d/192.168.122.1:5000/hosts.toml with the http mirror at startup (no restart).
-sudo install -D -o root -g root -m 0644 /tmp/registries.yaml /etc/rancher/rke2/registries.yaml
-curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
-sudo systemctl enable --now rke2-agent.service
 ```
 
-Expect 2 nodes Ready (1 `control-plane,etcd` + 1 worker) once you can see the cluster (kubeconfig step).
+```bash
+sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-1 192.168.122.21 192.168.122.11
+sudo install -D -o root -g root -m 0644 /tmp/registries.yaml /etc/rancher/rke2/registries.yaml
+curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.37.1+rke2r1 sh -
+```
 
-> **Registry trust (why this line matters).** Without `/etc/rancher/rke2/registries.yaml`, containerd
-> has no mirror for `192.168.122.1:5000` and defaults to **HTTPS** → `http: server gave HTTP response
-> to HTTPS client` when pulling `192.168.122.1:5000/nimbus/*`. containerd 2.x does **not** inline the
-> mirror in `config.toml`; RKE2 writes it to `certs.d/192.168.122.1:5000/hosts.toml`. If the agent is
-> already running when you add the file, run `sudo systemctl restart rke2-agent` to regenerate it.
-> Verify: `sudo cat /var/lib/rancher/rke2/agent/etc/containerd/certs.d/192.168.122.1:5000/hosts.toml`
-> shows a `[host."http://192.168.122.1:5000/v2"]` block with `capabilities = ["pull", "resolve"]`.
+```bash
+sudo systemctl enable --now rke2-agent.service
+```
 
 ### 3.2 — build + join nimbus-agent-2
 
@@ -214,13 +214,21 @@ The identical join recipe with agent-2's name / IP / MAC:
 ```bash
 zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/make-vm.sh nimbus-agent-2 192.168.122.22 52:54:00:a1:b1:22 4 3584 30
 
+sleep 25
+ssh-keygen -f '/home/jeffndegwa/.ssh/known_hosts' -R '192.168.122.22'
+
 scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/write-rke2-agent-config.sh ubuntu@192.168.122.22:/tmp/
 scp /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/vms/registries.yaml ubuntu@192.168.122.22:/tmp/
 ssh ubuntu@192.168.122.22
+```
+
+```bash
 sudo bash /tmp/write-rke2-agent-config.sh nimbus-agent-2 192.168.122.22 192.168.122.11
-# same registry-trust step as agent-1 (see the note under 3.1)
 sudo install -D -o root -g root -m 0644 /tmp/registries.yaml /etc/rancher/rke2/registries.yaml
-curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.36.5+rke2r1 sh -
+curl -sfL https://get.rke2.io | sudo INSTALL_RKE2_TYPE=agent INSTALL_RKE2_VERSION=v1.37.1+rke2r1 sh -
+```
+
+```bash
 sudo systemctl enable --now rke2-agent.service
 ```
 
@@ -242,16 +250,12 @@ the node kubeconfig only works on-node; the server IP is valid because it's in `
 Only after **both** workers are Ready, taint `nimbus-server-1` so no workloads land on the
 control-plane/etcd node:
 
-Run the following in a second terminal before you apply the taint, because events are only retained ~1h and you want to catch them live:
 ```bash
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-kubectl get events -A --watch --field-selector reason=TaintManagerEviction
+zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/taint-servers.sh
 ```
 
 ```bash
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-zsh /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/scripts/taint-servers.sh
-kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+kubectl get pods -A -o wide
 ```
 
 The order is the whole point: `CriticalAddonsOnly=true:NoExecute` applied at bootstrap (while a node is
@@ -313,8 +317,6 @@ The entrypoints are `web`(30001), `loki`(30000), `prometheus`(30002), `argocd`(3
 Phase 8 does not touch Traefik or socat.
 
 ```bash
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-
 kubectl apply -f /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster/k8s/bootstrap/traefik/helmchartconfig.yaml
 
 kubectl -n kube-system get pods -l job-name=helm-install-rke2-traefik -w
@@ -344,16 +346,18 @@ RKE2 ships nothing for ArgoCD, so we install upstream, **pinned to v2.12.3**. Th
 the 1.2 MB blob, then layer three small customizations (`k8s/bootstrap/argocd/`):
 
 ```bash
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-cd /home/jeffndegwa/vibe-learning/rke2-aws-tf-cluster
-
 kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 kubectl -n argocd rollout status deploy/argocd-server --timeout=360s
+```
 
+```bash
 kubectl apply -f k8s/bootstrap/argocd/argocd-cmd-params-cm.yaml
 kubectl apply -f k8s/bootstrap/argocd/argocd-server-service.yaml
 kubectl apply -f k8s/bootstrap/argocd/06_argocd-ingress.yaml
+```
+
+```bash
 kubectl -n argocd rollout restart deploy/argocd-server
 kubectl -n argocd rollout status deploy/argocd-server --timeout=180s
 ```
@@ -403,8 +407,8 @@ workers are small, so Prometheus/Loki are tuned tiny.
 Bootstrap ONCE by hand; self-managing after (commit a child manifest -> ArgoCD creates the app).
 
 ```bash
-git add k8s/ && git commit -m "..." && git push
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
+git add -A && git commit -m "..." && git push origin main
+
 kubectl apply -f k8s/bootstrap/root.yaml
 argocd app get nimbus-root
 ```
@@ -653,8 +657,9 @@ kubectl -n nimbus get pod -l app=service-a -o jsonpath='{range .items[*]}{.metad
 
 ## Phase 10 — manage Grafana via git (dashboards + alert rules as code)
 
-> **STATUS: in progress.** 10.1 is done. 10.2/10.3 are written but NOT YET RUN — fill in each real
-> result once it works (this file logs only what worked).
+> **STATUS: in progress.** 10.1-10.3 are done (dashboard + alert + contact point confirmed visible in
+> Grafana). 10.4 is written but NOT YET RUN — fill in each real result once it works (this file logs only
+> what worked).
 
 Idea: the Grafana chart can run **sidecar containers** that watch Kubernetes for ConfigMaps carrying a
 label and load them into Grafana. So: file in git -> ArgoCD syncs a labelled ConfigMap -> sidecar sees it ->
@@ -687,7 +692,9 @@ change reaches Grafana in two hops (root app syncs the changed Application, then
 
 ### 10.2 + 10.3 — a node-health dashboard, an alert rule and a Teams contact point, all from git
 
-> NOT YET RUN.
+Result: pushed; the **Nimbus - Node Health** dashboard (folder `Nimbus`), the **Node not Ready** rule and the
+`nimbus-teams` contact point all appeared in Grafana without touching the UI. (File names below are the
+first layout; 10.4 renames/splits them.)
 
 New files: `k8s/grafana/` and `k8s/applications/grafana-content.yaml`:
 - `kustomization.yaml` — a `configMapGenerator` wraps two files into ConfigMaps in namespace `grafana`:
@@ -716,3 +723,43 @@ kubectl -n grafana logs deploy/grafana -c grafana-sc-alerts --tail=20
 Verify in the UI (`http://localhost:3000`): Dashboards -> folder **Nimbus** -> "Nimbus - Node Health";
 Alerting -> Alert rules -> **Node not Ready** (state Normal, 3 nodes); Alerting -> Contact points ->
 **nimbus-teams** (provisioned, read-only).
+
+### 10.4 — maintainability: a second dashboard + rule group (client-cert expiry), restructured
+
+> NOT YET RUN.
+
+The lab version of DD-1462: `sum(increase(apiserver_client_certificate_expiration_seconds_bucket{le="…"}[1h]))`
+-> Reduce(last) -> Threshold `> 0`, three severities (`le` = `7.776e+06` 90d warning/24h repeat,
+`2.592e+06` 30d critical/4h, `604800.0` 7d emergency/1h), `for 5m`, noData/execErr = Alerting, same
+`nimbus-teams` contact point. Live check first (read-only): all three buckets read `0` in the lab (certs
+~360d from expiry), so the rules start Normal; the metric is also exposed by the kubelets, not just the
+API server — `sum()` covers both.
+
+Layout change (so each concern is its own file and growth stays manageable):
+
+```
+k8s/grafana/kustomization.yaml            one ConfigMap per file (1 MiB limit)
+k8s/grafana/dashboards/node-health.json   (was nimbus-node-health.json)
+k8s/grafana/dashboards/client-cert-expiry.json            NEW
+k8s/grafana/alerting/contact-points.yaml  nimbus-teams, split out of the old nimbus-alerting.yaml
+k8s/grafana/alerting/node-health.yaml     the "Node not Ready" rule (was nimbus-alerting.yaml)
+k8s/grafana/alerting/client-cert-expiry.yaml              NEW (3 rules)
+k8s/grafana/README.md                     the maintenance recipes + gotchas
+scripts/check-grafana-content.sh          pre-push check
+```
+
+Pre-push check (read-only), then push:
+
+```bash
+bash scripts/check-grafana-content.sh
+git add -A && git commit -m "grafana: client-cert expiry dashboard + rules, split alerting files, maintenance guide" && git push
+argocd app get grafana-content --refresh | head -14
+kubectl -n grafana get cm -l grafana_alert=1
+kubectl -n grafana get cm -l grafana_dashboard=1
+kubectl -n grafana logs deploy/grafana -c grafana-sc-alerts --tail=20
+```
+
+Expect the old ConfigMaps (`grafana-dashboard-nimbus-node-health`, `grafana-alerts-nimbus`) to be PRUNED and
+the new per-file ones created; in Grafana the node-health dashboard/rule and `nimbus-teams` keep working
+(same uids), plus **Nimbus - Client Cert Expiry** and the group **Nimbus Client Cert Expiry** with three
+Normal rules.

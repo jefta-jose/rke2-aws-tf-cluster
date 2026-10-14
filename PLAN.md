@@ -339,9 +339,13 @@ syncs a ConfigMap → sidecar sees it → Grafana loads it. Delete the file → 
   contact point** `nimbus-teams` with a placeholder webhook `dummy-webhook-url` (delivery fails on purpose; a
   real webhook is a secret and never goes in this public repo). The rule routes to it via rule-level
   `notification_settings`, the same way the real Rok rules do.
-- 10.4 Change the rule threshold in git → watch it change; delete the file → watch it vanish (prune);
-  edit in the UI → see provisioned objects are read-only / drift is reverted.
-- 10.5 Export an existing UI-built rule into the repo format (the real-Rok migration step).
+- 10.4 **Maintainability:** a second dashboard + a second rule group (the DD-1462-style **client-cert expiry**
+  warning/critical/emergency rules, same contact point). Restructure to one file per concern
+  (`contact-points.yaml`, `node-health.yaml`, `client-cert-expiry.yaml`), one ConfigMap per file,
+  `scripts/check-grafana-content.sh` as the pre-push check, and `k8s/grafana/README.md` with the recipes.
+- 10.5 Drive the loop: change a threshold in git → rule changes; force a rule to fire (see the Teams delivery
+  error on the placeholder webhook); delete a file → it vanishes (prune); edit in the UI → read-only/drift.
+- 10.6 Export an existing UI-built rule into the repo format (the real-Rok migration step).
 → Learn: dashboards/alerts as code, the sidecar label contract, prune + drift, and how a UI-only Grafana
   becomes reviewable in git.
 

@@ -1,0 +1,16 @@
+# Contact points shared by every rule file in this folder (rules reference them by name via
+# `notification_settings.receiver`). Kept in its own file so changing WHERE alerts go never touches a rule.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: nimbus-teams
+    receivers:
+      - uid: nimbus-teams
+        type: teams
+        # PLACEHOLDER on purpose: delivery will fail ("unsupported protocol scheme") and show as an error on
+        # the contact point. That still proves the whole git -> rule -> firing -> notify path.
+        # A REAL webhook is a secret: never commit it to this public repo (create it by hand instead).
+        settings:
+          url: dummy-webhook-url
+        disableResolveMessage: false
