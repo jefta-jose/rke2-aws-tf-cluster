@@ -1,4 +1,4 @@
-# Nimbus — RKE2 learning lab: single-server control plane + two worker nodes + observability + the cert-expiry incident
+# Nimbus — RKE2 lab: single-server control plane + two worker nodes + observability + the cert-expiry incident
 
 > **Naming:** our lab is **Nimbus**; everything we create is prefixed `nimbus-*`.
 
@@ -7,7 +7,7 @@ spreading replicas across distinct worker nodes needs ≥2 workers (Phase 9).
 
 ## Context & goal
 Real RKE2 in libvirt/QEMU VMs on WSL2, where the agent-join that crashes under Docker is clean because
-each node owns its kernel. On that foundation (libvirt + QEMU + a socat bridge) we build three learning
+each node owns its kernel. On that foundation (libvirt + QEMU + a socat bridge) we build three
 goals:
 
 1. **Embedded etcd (single member).** The one server runs RKE2 with `cluster-init`, so etcd is a

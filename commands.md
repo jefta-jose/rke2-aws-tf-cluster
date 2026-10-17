@@ -1,4 +1,4 @@
-# Commands Log — Nimbus RKE2 learning lab (1 server + 2 workers, observability + cert-expiry incident)
+# Commands Log — Nimbus RKE2 lab (1 server + 2 workers, observability + cert-expiry incident)
 
 Logs **only what WORKED**: the real command + a one-line note + the real result.
 Failed attempts are not logged (except a short "gotcha" note worth keeping).
@@ -410,7 +410,6 @@ Bootstrap ONCE by hand; self-managing after (commit a child manifest -> ArgoCD c
 git add -A && git commit -m "..." && git push origin main
 
 kubectl apply -f k8s/bootstrap/root.yaml
-argocd app get nimbus-root
 ```
 
 (The `metadata.finalizers: resources-finalizer.argocd.argoproj.io` warning is cosmetic — it's
@@ -496,8 +495,6 @@ The repo is public, so credentials never go in a manifest — same idea as the r
 Do this BEFORE the push so the pod finds its Secret on first start:
 
 ```bash
-export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
-
 kubectl create namespace grafana
 kubectl -n grafana create secret generic grafana \
   --from-literal=admin-user=admin \
@@ -510,8 +507,6 @@ kubectl -n grafana create secret generic grafana \
 by the existing `ingress` app) are the only new manifests. ArgoCD reads GitHub, not your working tree:
 
 ```bash
-git add -A && git commit -m "grafana via argocd" && git push
-argocd app get grafana --refresh
 kubectl -n grafana get pods
 ```
 
@@ -519,7 +514,6 @@ kubectl -n grafana get pods
 
 ```bash
 kubectl -n grafana get secret grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
-curl -s -o /dev/null -w "grafana: %{http_code}\n" http://localhost:3000/api/health --max-time 5
 ```
 
 Open `http://localhost:3000` (user `admin`, password from the command above). Under Connections ->
@@ -533,7 +527,7 @@ Key points:
 
 ---
 
-## Phase 9 — app pods: resource management + pod (anti-)affinity (learning)
+## Phase 9 — app pods: resource management + pod (anti-)affinity
 
 The three-VM topology exists for this phase. We give the Phase 9 trio a worked example on
 **`service-a`** (scaled to `replicas: 2`) plus a tiny **`cache`** Deployment, to learn three scheduling
