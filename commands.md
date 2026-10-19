@@ -757,3 +757,262 @@ Expect the old ConfigMaps (`grafana-dashboard-nimbus-node-health`, `grafana-aler
 the new per-file ones created; in Grafana the node-health dashboard/rule and `nimbus-teams` keep working
 (same uids), plus **Nimbus - Client Cert Expiry** and the group **Nimbus Client Cert Expiry** with three
 Normal rules.
+
+---
+
+## Phase 11 — Velero (DD-1465 lab: install it the way the real clusters do)
+
+> **STATUS: in progress.** Steps 11.1-11.4 done. Source of truth for the real setup:
+> `InternalAWSInfrastructure/application_cluster/manifests/values/velero_values.yaml` (installed with a plain
+> `helm upgrade --install`, not ArgoCD). The bucket is **Floci** (S3 emulator on the host, `floci-docker/`)
+> instead of AWS S3; Velero is **v1.15.2** (chart `vmware-tanzu/velero` **8.3.0** — chart and app versions differ).
+
+### 11.1 — the bucket (prod: `s3-backup/main.tf`, `<cluster>-etcd-backup`)
+
+```bash
+source /home/jeffndegwa/vibe-learning/floci-docker/.env
+aws s3 mb s3://nimbus-etcd-backup
+```
+
+Result: `make_bucket: nimbus-etcd-backup`; `aws s3 ls s3://nimbus-etcd-backup` prints nothing (empty). The
+`.env` runs `sts get-caller-identity` on every `source` — the account JSON is harmless.
+
+### 11.2 — credentials Secret (prod uses the node IAM role instead — no credentials in the cluster)
+
+```bash
+export KUBECONFIG=/tmp/nimbus-kubeconfig.yaml
+kubectl create namespace velero
+kubectl -n velero create secret generic cloud-credentials --from-literal=cloud=$'[default]\naws_access_key_id=test\naws_secret_access_key=test'
+```
+
+Result: `secret/cloud-credentials created`, `DATA 1` (one key named `cloud`, AWS shared-credentials format).
+Created by hand, never in git. Floci accepts any credentials.
+
+### 11.3 — install Velero from a values file
+
+`k8s/velero/velero-values.yaml` = prod's file plus lab-only lines: `s3Url: http://192.168.122.1:4566` +
+`s3ForcePathStyle: "true"` (Floci, reached via the libvirt gateway), `credentials.existingSecret`,
+`snapshotsEnabled: false` (no EBS), `upgradeCRDs: false` (the CRD-upgrade job pulls `bitnami/kubectl:1.37`,
+which does not exist). No `schedules:` yet.
+
+```bash
+helm repo add vmware-tanzu https://vmware-tanzu.github.io/helm-charts
+helm repo update vmware-tanzu
+helm search repo vmware-tanzu/velero --version 8.3.0
+helm upgrade --install velero vmware-tanzu/velero --version 8.3.0 --namespace velero -f k8s/velero/velero-values.yaml --wait --timeout 4m
+```
+
+Result: `STATUS: deployed`, deployment `velero` 1/1. Gotchas: the chart NOTES tell you to check `secret/velero`
+(not created — we use `existingSecret`) and to download a macOS client (not needed).
+
+### 11.4 — check the backup storage location
+
+```bash
+kubectl -n velero get pods
+kubectl -n velero get backupstoragelocations
+kubectl -n velero logs deploy/velero --tail=20
+aws s3 ls s3://nimbus-etcd-backup/ --recursive
+```
+
+Result: pod 1/1 Running; BSL `aws` **Available**, `LAST VALIDATED` under 60s (re-checked every minute — log
+line `BackupStorageLocations is valid, marking as available`). `plugin process exited` lines are normal (the AWS
+plugin is a short-lived child process per call). The bucket is still **empty**: validation only lists, it never
+writes.
+
+### 11.5 — something to back up
+
+```bash
+kubectl create namespace demo
+kubectl -n demo create deployment web --image=nginx --replicas=2
+kubectl -n demo create configmap app-config --from-literal=color=blue
+kubectl -n demo create secret generic app-secret --from-literal=password=hunter2
+kubectl -n demo get all,cm,secret
+```
+
+Result: 2 `web` pods Running after ~30s. Kubernetes adds `configmap/kube-root-ca.crt` to every namespace by itself.
+
+### 11.6 — the first backup (a `Backup` is just a Kubernetes object)
+
+`k8s/velero/demo-backup.yaml` (kind `Backup`, ns `velero`, `includedNamespaces: [demo]`, `ttl: 240h`):
+
+```bash
+kubectl apply -f k8s/velero/demo-backup.yaml
+kubectl -n velero get backup demo-backup-1 -w
+aws s3 ls s3://nimbus-etcd-backup/ --recursive
+```
+
+Result: the watch only shows `NAME AGE` (the Backup CRD has no phase column — read it with
+`kubectl -n velero get backup demo-backup-1 -o jsonpath='{.status.phase}{"\n"}'` -> `Completed`). The bucket now has
+`backups/demo-backup-1/`: `demo-backup-1.tar.gz` (the manifests), `velero-backup.json` (the Backup object itself, used
+by the backup-sync loop), `-logs.gz`, `-resource-list.json.gz`, `-results.gz`, and ~27-29 byte files (`-csi-*`,
+`-volumesnapshots`, `-podvolumebackups`, `-volumeinfo`, `-itemoperations`) that are gzip of nothing because `demo` has no volumes.
+
+### 11.7 — what a backup contains
+
+```bash
+aws s3 cp s3://nimbus-etcd-backup/backups/demo-backup-1/demo-backup-1.tar.gz /tmp/demo-backup-1.tar.gz
+tar -tzf /tmp/demo-backup-1.tar.gz
+```
+
+Result: plain JSON manifests as `resources/<kind>/namespaces/<ns>/<name>.json` (deployments.apps, replicasets.apps,
+pods, configmaps, secrets, serviceaccounts, events, and `namespaces/cluster/demo.json`), each saved twice — once as read
+and once under `v1-preferredversion/` — plus `metadata/version`. A backup is manifests, not disk data.
+
+### 11.8 — Secrets are in the backup in readable form
+
+```bash
+tar -xzOf /tmp/demo-backup-1.tar.gz resources/secrets/namespaces/demo/app-secret.json | grep -o '"password":"[^"]*"' | cut -d'"' -f4 | base64 -d; echo
+```
+
+Result: `hunter2`. Secrets are only base64 in Kubernetes and Velero copies them as-is, so read access to the backup
+bucket = read access to every Secret in the backed-up namespaces.
+
+### 11.9 — lose the namespace
+
+```bash
+kubectl delete namespace demo
+kubectl get namespace demo
+kubectl get pods -A | grep web
+```
+
+Result: `namespace "demo" deleted`; `NotFound`; no `web` pods. The only copy of the objects is now in the bucket.
+
+### 11.10 — restore (a `Restore` is also just an object)
+
+`k8s/velero/demo-restore.yaml` (kind `Restore`, ns `velero`, `backupName: demo-backup-1`):
+
+```bash
+kubectl apply -f k8s/velero/demo-restore.yaml
+kubectl -n velero get restore demo-restore-1 -o jsonpath='{.status.phase}{"\n"}'
+kubectl -n demo get all,cm,secret
+kubectl -n demo get secret app-secret -o jsonpath='{.data.password}' | base64 -d; echo
+```
+
+Result: `Completed`; namespace, Deployment, ReplicaSet, both pods, ConfigMap and Secret back (all `AGE` ~18s),
+password `hunter2`. The pods keep their old names because the pods and their ReplicaSet are in the backup and were
+restored as-is (new objects, same names).
+
+### 11.11 — the schedule (prod's `daily-backup`, lab cron every 5 min)
+
+`k8s/velero/velero-values.yaml` gained prod's `schedules:` block. The chart prefixes the release name, so the key
+`daily-backup` becomes the Schedule `velero-daily-backup` (the `schedule=` label in the DD-1465 metrics). Lab cron is
+`*/5 * * * *` so it can be watched; **prod is `CRON_TZ=America/New_York 0 0 * * *` — put it back before finishing.**
+
+```bash
+helm upgrade velero vmware-tanzu/velero --version 8.3.0 --namespace velero -f k8s/velero/velero-values.yaml --wait --timeout 4m
+kubectl -n velero get schedules
+kubectl -n velero get backups
+```
+
+### 11.12 — reproduce the incident: a foreign top-level folder in the bucket
+
+```bash
+kubectl -n velero get backupstoragelocations
+echo fake-etcd-snapshot | aws s3 cp - s3://nimbus-etcd-backup/etcd-snapshots/pre-certfix.db
+aws s3 ls s3://nimbus-etcd-backup/
+kubectl -n velero get backupstoragelocations -w
+kubectl -n velero get backupstoragelocation aws -o jsonpath='{.status.message}{"\n"}'
+kubectl -n velero logs deploy/velero --since=5m | grep -i -E "unavailable|invalid|etcd-snapshots"
+```
+
+Result: the bucket now lists `backups/`, `etcd-snapshots/` and `restores/` (`restores/` is Velero's own, created by the
+restore). Within ~1 minute the BSL goes **Unavailable**. Exact strings:
+- `.status.message`: `BackupStorageLocation "aws" is unavailable: Backup store contains invalid top-level directories: [etcd-snapshots]`
+- log, level=error: `fail to validate backup store ... error="Backup store contains invalid top-level directories: [etcd-snapshots]"`
+- log, level=info: `BackupStorageLocation is invalid, marking as unavailable`
+- healthy line, for contrast: `BackupStorageLocations is valid, marking as available` (plural, "valid" — no overlap with the broken one).
+
+### 11.13 — the schedule only exists after the `helm upgrade` really ran
+
+Gotcha: `kubectl -n velero get backups` showed only `demo-backup-1` for ~15 minutes because the step-11 `helm upgrade`
+had not been run (`helm -n velero list` showed `REVISION 1`). After the upgrade (`REVISION 2`):
+
+```bash
+helm -n velero list
+kubectl -n velero get schedules
+kubectl -n velero get schedule velero-daily-backup -o jsonpath='{.spec.schedule}{"\n"}{.status}{"\n"}'
+```
+
+Result: Schedule `velero-daily-backup` Enabled, `*/5 * * * *`, first backup `velero-daily-backup-20261019122530` at the
+first 5-minute mark; log line `Schedule is due, going to submit backup.` (Don't `grep -i schedule` on the Velero log: it
+also matches `kube-scheduler` and floods the output.) The scheduled backup has no `includedNamespaces`, so it backs up the
+**whole cluster** (~810 items), unlike the `demo` backup.
+
+### 11.14 — an Unavailable location does NOT stop backups (Velero v1.15.2, lab)
+
+```bash
+kubectl -n velero get backupstoragelocations
+kubectl -n velero get backup velero-daily-backup-20261019122530 -o jsonpath='{.status.phase}{"  start="}{.status.startTimestamp}{"  done="}{.status.completionTimestamp}{"  errors="}{.status.errors}{"  warnings="}{.status.warnings}{"\n"}'
+aws s3 ls s3://nimbus-etcd-backup/backups/
+```
+
+Result: BSL `Unavailable` (validated 10s ago) while the scheduled backup started 11 minutes after it went down is
+`Completed` in 7s, no errors/warnings, and `backups/velero-daily-backup-20261019122530/` is in the bucket. So the
+"no successful backup in 26h" and "failed backups" alerts do NOT catch a bad bucket layout; only the BSL-Unavailable alert does.
+
+### 11.15 — which Velero metrics does Prometheus have? (DD-1465 "check first")
+
+The Velero pod carries `prometheus.io/scrape: "true"` (set by the chart), so the lab Prometheus (job `kubernetes-pods`) scrapes it.
+
+```bash
+curl -s 'localhost:9090/api/v1/label/__name__/values' | tr ',' '\n' | grep -i velero
+curl -s -G localhost:9090/api/v1/query --data-urlencode 'query=velero_backup_last_successful_timestamp' | python3 -m json.tool
+curl -s -G localhost:9090/api/v1/query --data-urlencode 'query=velero_backup_failure_total' | python3 -m json.tool
+curl -s -G localhost:9090/api/v1/query --data-urlencode 'query=time() - velero_backup_last_successful_timestamp{schedule="velero-daily-backup"}'
+```
+
+Result: only `velero_backup_*`, `velero_restore_*`, `velero_csi_*`, `velero_volume_snapshot_*` metrics — **no
+backup-storage-location metric**, so the BSL alert must be a Loki log alert. `velero_backup_last_successful_timestamp`,
+`velero_backup_failure_total` and `velero_backup_partial_failure_total` exist. Each has two series: one with no
+`schedule` label (manual backups) and one with `schedule="velero-daily-backup"` — the filter is needed. Counters start at
+`0`. Series carry `pod`/`instance`, so alerts should aggregate (`max`/`sum`), not depend on a pod name.
+`time() - ...{schedule="velero-daily-backup"}` returned ~137 (seconds since the last scheduled success).
+
+### 11.16 — do the Velero logs reach Loki?
+
+```bash
+curl -s -G localhost:3100/loki/api/v1/query_range --data-urlencode 'query={namespace="velero"} |= "marking as unavailable"' --data-urlencode 'limit=2' | python3 -m json.tool | head -40
+curl -s -G localhost:3100/loki/api/v1/query --data-urlencode 'query=count_over_time({namespace="velero"} |= "is invalid, marking as unavailable" [10m])' | python3 -m json.tool | head -30
+```
+
+Result: stream labels `namespace="velero"`, `app="velero"`, `container="velero"`, `pod=...`, `job="velero/velero"`. The broken line
+is logged once a minute (count over 10m = `10`). Trap for the alert: `noData = Alerting` + a "bad line" query = fires when
+healthy (no matching lines = no data). Fix: `... or vector(0)`, or alert on the *absence* of the good line
+`is valid, marking as available` (also covers Velero/Promtail being down).
+
+### 11.17 — the two commands to remember: list backups + status, and remove the bad folder
+
+List every backup with its phase (the Backup CRD has no status column, so `kubectl get backups` alone shows only NAME/AGE):
+
+```bash
+kubectl -n velero get backups -o custom-columns=NAME:.metadata.name,PHASE:.status.phase,CREATED:.metadata.creationTimestamp
+```
+
+Result: `demo-backup-1` and every `velero-daily-backup-<timestamp>` (one per 5 minutes) show `Completed`, including the ones
+created while the BSL was `Unavailable`.
+
+Delete the bad top-level folder (the fix for the incident). Only objects under `etcd-snapshots/` are removed; undo = upload the
+file again:
+
+```bash
+aws s3 rm s3://nimbus-etcd-backup/etcd-snapshots/ --recursive
+kubectl -n velero get backupstoragelocations
+```
+
+Result: `delete: s3://nimbus-etcd-backup/etcd-snapshots/pre-certfix.db`. The BSL is re-validated every 60s, so it still showed
+`Unavailable` (LAST VALIDATED 36s) right after the delete; wait ~1 minute and re-run the `get backupstoragelocations` to see
+it return to `Available`.
+
+### 11.18 — restore with the BSL Unavailable? (NOT conclusive — ran after the folder was deleted)
+
+```bash
+kubectl delete namespace demo
+kubectl get namespace demo
+kubectl apply -f k8s/velero/demo-restore-2.yaml
+kubectl -n velero get restore demo-restore-2 -o jsonpath='{.status.phase}{"  errors="}{.status.errors}{"  warnings="}{.status.warnings}{"\n"}'
+kubectl -n demo get all
+```
+
+Result: `Completed  errors=  warnings=1`; both `web` pods Running again. BUT the `aws s3 rm` from 11.17 was run about a minute
+before the restore, so the BSL had probably already returned to `Available`. This does **not** prove restores work while the
+BSL is `Unavailable`. Redo with a fresh `demo-restore-3` after re-creating the bad folder (see 11.19).

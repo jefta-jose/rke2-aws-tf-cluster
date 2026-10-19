@@ -1,0 +1,7 @@
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: demo-restore-1
+  namespace: velero
+spec:
+  backupName: demo-backup-1

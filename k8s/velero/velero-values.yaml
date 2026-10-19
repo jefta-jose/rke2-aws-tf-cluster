@@ -1,0 +1,35 @@
+initContainers:
+  - name: velero-plugin-for-aws
+    image: velero/velero-plugin-for-aws:v1.11.0
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+configuration:
+  backupStorageLocation:
+    - name: "aws"
+      provider: "velero.io/aws"
+      bucket: nimbus-etcd-backup
+      default: true
+      config:
+        region: us-east-1
+        s3Url: http://192.168.122.1:4566
+        s3ForcePathStyle: "true"
+
+credentials:
+  useSecret: true
+  existingSecret: cloud-credentials
+
+snapshotsEnabled: false
+
+# Lab-only: the CRD-upgrade job pulls bitnami/kubectl:<cluster minor> and there is no 1.37 tag.
+# The chart's crds/ directory still installs the CRDs on first install.
+upgradeCRDs: false
+
+schedules:
+  daily-backup:
+    disabled: false
+    # Lab: every 5 minutes so it can be watched. Prod: "CRON_TZ=America/New_York 0 0 * * *"
+    schedule: "*/5 * * * *"
+    template:
+      ttl: "240h"

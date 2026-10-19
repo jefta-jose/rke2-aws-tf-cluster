@@ -1,0 +1,9 @@
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: demo-backup-1
+  namespace: velero
+spec:
+  includedNamespaces:
+    - demo
+  ttl: 240h
