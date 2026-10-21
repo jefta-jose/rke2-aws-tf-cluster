@@ -6,13 +6,15 @@
 #   - no Azure AD / SMTP: the lab has no Entra tenant or mail relay.
 #   - admin credentials come from a Secret named `grafana` that YOU create out-of-band (never in git; this
 #     repo is public) — same pattern as the real grafana-secret. See commands.md Phase 8.
-#   - datasources are PROVISIONED here (real Rok created them in the UI), pointing at the in-cluster
-#     Services of the prometheus + loki apps.
+#   - no datasources are provisioned here (like real Rok: they are created separately, now by Terraform).
 #
 # Exposed host-less through the Traefik `grafana` entrypoint (NodePort 30006 -> socat localhost:3000) via
 # a plain Ingress in k8s/ingress/ (synced by the `ingress` app) — NOT the chart, same as every other app.
 #
-# Phase 8 = the deploy; Phase 10 adds the sidecars below so dashboards + alert rules can come from git.
+# CLEAN SLATE (Grafana-as-code rehearsal): no sidecars, no provisioned datasources, no dashboards or
+# alerts. Everything is created by Terraform from InternalAWSInfrastructure/grafana (private repo).
+# AWS read credentials reach the pod only via the Secret `grafana-aws-creds`, created by hand and never
+# in git (optional: true, so the pod still starts before the Secret exists).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -40,45 +42,15 @@ spec:
             root_url: "http://localhost:3000"
           users:
             default_theme: dark
-        datasources:
-          datasources.yaml:
-            apiVersion: 1
-            datasources:
-              - name: Prometheus
-                uid: prometheus          # fixed uid so dashboards/alert rules in git can reference it
-                type: prometheus
-                access: proxy
-                url: http://prometheus-server.monitoring.svc.cluster.local:80
-                isDefault: true
-              - name: Loki
-                uid: loki
-                type: loki
-                access: proxy
-                url: http://loki.monitoring.svc.cluster.local:3100
+        plugins:
+          - yesoreyeram-infinity-datasource 3.4.1
+          - simpod-json-datasource 0.6.7
+        envFromSecrets:
+          - name: grafana-aws-creds
+            optional: true
         resources:
-          requests: { cpu: 50m, memory: 96Mi }
-          limits: { memory: 256Mi }
-        # PLAN Phase 10: sidecars load dashboards / alert rules from labelled ConfigMaps (git -> ArgoCD -> CM).
-        sidecar:
-          dashboards:
-            enabled: true
-            label: grafana_dashboard
-            labelValue: "1"
-            searchNamespace: ALL
-            folderAnnotation: grafana_folder
-            provider:
-              foldersFromFilesStructure: true
-            resources:
-              requests: { cpu: 10m, memory: 48Mi }
-              limits: { memory: 96Mi }
-          alerts:
-            enabled: true
-            label: grafana_alert
-            labelValue: "1"
-            searchNamespace: ALL
-            resources:
-              requests: { cpu: 10m, memory: 48Mi }
-              limits: { memory: 96Mi }
+          requests: { cpu: 100m, memory: 192Mi }
+          limits: { memory: 512Mi }   # ~60 alert rules + CloudWatch queries + plugins
   destination:
     server: https://kubernetes.default.svc
     namespace: grafana

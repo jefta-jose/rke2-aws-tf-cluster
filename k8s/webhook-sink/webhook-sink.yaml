@@ -1,0 +1,39 @@
+# Dummy notification receiver for the Grafana-as-code rehearsal. Every Teams contact point in the lab
+# Grafana points at http://webhook-sink.grafana.svc.cluster.local:8080/<contact-point-name>, so nothing
+# ever reaches a real Teams channel. It echoes each request to its log:
+#   kubectl -n grafana logs deploy/webhook-sink
+# No secrets, nothing real here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook-sink
+  namespace: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: webhook-sink }
+  template:
+    metadata:
+      labels: { app: webhook-sink }
+    spec:
+      containers:
+        - name: sink
+          image: mendhak/http-https-echo:36
+          ports:
+            - containerPort: 8080
+          env:
+            - { name: HTTP_PORT, value: "8080" }
+            - { name: DISABLE_REQUEST_LOGS, value: "false" }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webhook-sink
+  namespace: grafana
+spec:
+  selector: { app: webhook-sink }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }

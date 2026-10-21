@@ -4,6 +4,14 @@ Logs **only what WORKED**: the real command + a one-line note + the real result.
 Failed attempts are not logged (except a short "gotcha" note worth keeping).
 See `PLAN.md` for the phase-by-phase design.
 
+> **STATUS (2026-10-21) — lab narrowed to a Grafana-as-code rehearsal.** Now running: **1 server + 1 agent**
+> with Traefik, ArgoCD, a clean-slate Grafana and a dummy `webhook-sink`. The ArgoCD apps `prometheus`,
+> `loki`, `nimbus-app` and `grafana-content` (and the frontend/Prometheus/Loki Ingresses, `k8s/grafana/`,
+> `scripts/check-grafana-content.sh`) were **removed**. The log below is kept as history; sections that
+> describe removed pieces carry a **RETIRED/PARKED** note. Last commit that still contains them: `96086f2`
+> (`git show 96086f2:<path>`). Grafana content is now managed by Terraform in
+> `InternalAWSInfrastructure/grafana/` (see its `PLAN.md`).
+
 **Topology — 1 control-plane/etcd server + 2 worker nodes (3 VMs).** The second worker exists to make
 **pod anti-affinity** real (Phase 9) — you need ≥2 workers to watch replicas land on distinct hosts.
 etcd is a **single member** (quorum 1, no HA / elections / split-brain); the cert-expiry incident
@@ -29,12 +37,15 @@ k8s/
 │   ├── argocd/         ArgoCD customizations (cmd-params, server Service, UI Ingress)
 │   └── traefik/        HelmChartConfig that reshapes RKE2's packaged Traefik
 ├── applications/   ArgoCD Application CRs, one flat file per app — `nimbus-root` watches this dir
-└── ingress/        every Traefik Ingress (frontend, prometheus, loki, ...), synced by the `ingress` app
+├── ingress/        every Traefik Ingress, synced by the `ingress` app (now just `grafana.yaml`;
+│                   the frontend/prometheus/loki ones were removed 2026-10-21)
+├── webhook-sink/   dummy notification receiver for the Grafana rehearsal (synced by the `webhook-sink` app)
+└── velero/         Velero values + demo backup/restore (helm-installed, not ArgoCD)
 ```
 
 Rule of thumb: `bootstrap/` is what you apply yourself; everything else is synced by ArgoCD from git.
 
-> **Migration note (pending until you push):** the running `nimbus-root` was applied by hand and still
+> **Migration note (historical — done long ago; the three Ingresses it mentions no longer exist):** the running `nimbus-root` was applied by hand and still
 > points at the old `k8s/argocd/applications/children` path. After `git push`, re-apply the root once:
 > `kubectl apply -f k8s/bootstrap/root.yaml`. The old `monitoring-ingress` + `apps-ingress` apps are
 > replaced by a single `ingress` app, so the three Ingresses are deleted and recreated — expect
@@ -265,7 +276,7 @@ already catching workloads, **canal** (DaemonSet, blanket tolerations) and **kub
 are not evicted, networking stays intact, and the taint lives in the node object in etcd (survives
 reboots). **CoreDNS stays on the server by design** (RKE2 gives it a `CriticalAddonsOnly` toleration for
 DNS HA); only its `autoscaler` moves to a worker — visible proof the taint took. The taint's real job is
-keeping heavy add-ons (Traefik/Prometheus/Loki/apps) on the workers.
+keeping heavy add-ons (Traefik/Grafana/Velero — originally also Prometheus/Loki/apps) on the workers.
 
 ---
 
@@ -285,7 +296,8 @@ The start is idempotent; tear the forwards down with `zsh .../socat-bridge.sh st
 
 Result: all six host ports LISTEN (`8080`/web->30001, `3100`/loki->30000, `9090`/prometheus->30002,
 `9069`/argocd->30003, `8025`/mailpit-ui->30004, `1025`/mailpit-smtp->30005; plus `3000`/grafana->30006,
-which `socat-bridge.sh` also forwards for the in-cluster Grafana of Phase 8). Notes:
+which `socat-bridge.sh` also forwards for the in-cluster Grafana of Phase 8). *(2026-10-21: `8080`, `3100`
+and `9090` now have no app behind them — frontend, Loki and Prometheus were removed; the forwards are harmless.)* Notes:
 - The forwards bind `0.0.0.0` and accept connections now, but can't *complete* a connection until
   Traefik publishes those NodePorts (Phase 5) — expected. Phase 5.2 verifies they reach Traefik.
 - Idempotent restart matches `socat .*TCP:192.168.122.21:` so a re-run kills only this script's
@@ -312,7 +324,7 @@ RKE2's helm-controller watches for a `HelmChartConfig` of the SAME name/namespac
 chart and re-runs the install with its `valuesContent` deep-merged over the chart defaults. Our values
 set named entrypoints, a NodePort service, metrics, JSON access logs, and the dashboard — minus any
 app-specific entrypoints or plugins we don't need. File: `k8s/bootstrap/traefik/helmchartconfig.yaml`.
-The entrypoints are `web`(30001), `loki`(30000), `prometheus`(30002), `argocd`(30003), `mailpit`(30004),
+The entrypoints are `web`(30001), `loki`(30000), `prometheus`(30002) *(web/loki/prometheus are now unused — apps removed)*, `argocd`(30003), `mailpit`(30004),
 `mailpit-smtp`(30005) and `grafana`(30006, port 3000 — used by Phase 8). All of Traefik is applied here, so
 Phase 8 does not touch Traefik or socat.
 
@@ -389,13 +401,18 @@ vs server v2.12 skew is fine for login/cluster-add.)
 
 ArgoCD syncs from a **Git repo**; the project is now a git repo pushed to
 `git@github.com:jefta-jose/rke2-aws-tf-cluster.git` (branch `main`). The app-of-apps + Applications
-are created when we have workloads to put in them (monitoring in Phase 7, apps in Phase 9), deployed to
+are created when we have workloads to put in them (monitoring in Phase 7 — later retired; apps in Phase 9 — later parked), deployed to
 the **in-cluster** cluster. ArgoCD manages the cluster it runs on via its default in-cluster
 ServiceAccount, so Applications target `https://kubernetes.default.svc`; no external cluster is registered.
 
 ---
 
 ## Phase 7 — observability in-cluster (GitOps via ArgoCD app-of-apps)
+
+> **PARTLY RETIRED (2026-10-21):** 7.0 (the app-of-apps root) is still live. 7.1 (Prometheus) and 7.2 (Loki)
+> were **removed** — their ArgoCD apps and the `prometheus.yaml`/`loki.yaml`/`frontend.yaml` Ingresses are
+> deleted, and `monitoring` namespace workloads go with them. 7.3 (`ingress` app) now only syncs
+> `k8s/ingress/grafana.yaml`. Everything below is the record of what worked at the time.
 
 Route chosen: **GitOps**. ArgoCD (public repo, no creds) owns monitoring via an app-of-apps. The
 workers are small, so Prometheus/Loki are tuned tiny.
@@ -408,7 +425,9 @@ Bootstrap ONCE by hand; self-managing after (commit a child manifest -> ArgoCD c
 
 ```bash
 git add -A && git commit -m "..." && git push origin main
+```
 
+```bash
 kubectl apply -f k8s/bootstrap/root.yaml
 ```
 
@@ -476,14 +495,18 @@ Gotchas:
 
 ## Phase 8 — Grafana in-cluster, managed by ArgoCD (POC of the real Rok setup)
 
-> **STATUS: written, NOT YET RUN.** Mark each step with its real result once you run it (this file logs
-> only what worked).
+> **UPDATED 2026-10-21 — clean slate.** Grafana now runs with **no sidecars, no provisioned datasources and
+> no dashboards/alerts** (the instance is empty); plugins Infinity 3.4.1 + simpod-json 0.6.7 are installed to
+> match real Rok; AWS credentials arrive only via the hand-made Secret `grafana-aws-creds` (optional, never in
+> git); a `webhook-sink` Deployment/Service in ns `grafana` catches dummy notifications. All Grafana content
+> comes from Terraform (`InternalAWSInfrastructure/grafana/`). The 8.x text below is the original deploy; where
+> it mentions Prometheus/Loki datasources, that no longer applies. Extra step: **8.4** below.
 
 Grafana runs **in the cluster**, deployed by ArgoCD the way the real Rok Grafana is (chart
 `grafana/grafana` **8.10.1** = Grafana 11.5.2, release `grafana`, **namespace `grafana`**). The old host
 docker-compose Grafana (`host-grafana/`) is removed. Deliberate differences from real Rok: persistence off
-(emptyDir; real = `ebs-sc` PVC), no Azure AD/SMTP, datasources provisioned in values (real = UI), Traefik
-host-less Ingress (real = nginx + cert-manager TLS).
+(emptyDir; real = `ebs-sc` PVC), no Azure AD/SMTP, Traefik host-less Ingress (real = nginx + cert-manager TLS).
+(Originally the datasources were provisioned in values; since 2026-10-21 there are none — Terraform creates them.)
 
 **Prerequisite (already done in Phases 4-5, nothing to run here):** the Traefik `grafana` entrypoint
 (NodePort 30006) is applied and socat forwards `localhost:3000` -> 30006. Phase 8 is just the same
@@ -516,18 +539,40 @@ kubectl -n grafana get pods
 kubectl -n grafana get secret grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
 ```
 
-Open `http://localhost:3000` (user `admin`, password from the command above). Under Connections ->
-Data sources, **Prometheus** (default) and **Loki** should test green — they point at the in-cluster
-Services `prometheus-server.monitoring.svc:80` and `loki.monitoring.svc:3100`, not the socat ports.
+Open `http://localhost:3000` (user `admin`, password from the command above). *(Original check: under
+Connections -> Data sources, **Prometheus** and **Loki** tested green. Removed 2026-10-21 — the Data sources
+list is now empty on purpose.)*
 
 Key points:
 - State is `emptyDir`: a pod restart resets anything created only in the UI. That is intentional — the
   next step tracks a dashboard + alert rule in git so they survive.
-- Add dashboards/alerts later via git (deferred step); nothing is clicked together by hand.
+- Dashboards/alerts/datasources come from Terraform now (not from git sidecars, not from the UI).
+
+### 8.4 — AWS read credentials for CloudWatch (hand-made Secret, never in git)
+
+> NOT YET RUN. Prefer a dedicated **read-only** CloudWatch IAM user over admin keys. Type the values at the
+> prompts so they never land in shell history or a file:
+
+```bash
+read -s AWS_ID; read -s AWS_SECRET
+kubectl -n grafana create secret generic grafana-aws-creds \
+  --from-literal=AWS_ACCESS_KEY_ID="$AWS_ID" \
+  --from-literal=AWS_SECRET_ACCESS_KEY="$AWS_SECRET" \
+  --from-literal=AWS_DEFAULT_REGION=us-east-2
+unset AWS_ID AWS_SECRET
+kubectl -n grafana rollout restart deploy/grafana
+kubectl -n grafana exec deploy/grafana -- env | grep -E '^AWS_' | cut -d= -f1   # names only, never values
+```
 
 ---
 
 ## Phase 9 — app pods: resource management + pod (anti-)affinity
+
+> **PARKED (2026-10-21):** the `nimbus-app` ArgoCD app and the frontend Ingress were removed, and only one
+> worker exists now, so the commands below can't be re-run as written (also note `-n nimbus` here vs `default`
+> in the app manifest — check before resuming). `apps/` and `charts/nimbus-app/` are still in the repo. To
+> resume: re-add `nimbus-agent-2`, and restore `k8s/applications/nimbus-app.yaml` +
+> `k8s/ingress/frontend.yaml` from commit `96086f2`.
 
 The three-VM topology exists for this phase. We give the Phase 9 trio a worked example on
 **`service-a`** (scaled to `replicas: 2`) plus a tiny **`cache`** Deployment, to learn three scheduling
@@ -650,6 +695,11 @@ kubectl -n nimbus get pod -l app=service-a -o jsonpath='{range .items[*]}{.metad
 ---
 
 ## Phase 10 — manage Grafana via git (dashboards + alert rules as code)
+
+> **RETIRED (2026-10-21) — superseded by Terraform.** The sidecars, the `grafana-content` app, `k8s/grafana/`
+> and `scripts/check-grafana-content.sh` are deleted and the Grafana pod is back to a single container. The
+> same goal is now done with Terraform + JSON in `InternalAWSInfrastructure/grafana/`. This section is the
+> record of the sidecar approach; the files live in git history at commit `96086f2`. Do not re-run these commands.
 
 > **STATUS: in progress.** 10.1-10.3 are done (dashboard + alert + contact point confirmed visible in
 > Grafana). 10.4 is written but NOT YET RUN — fill in each real result once it works (this file logs only
@@ -951,6 +1001,10 @@ Result: BSL `Unavailable` (validated 10s ago) while the scheduled backup started
 "no successful backup in 26h" and "failed backups" alerts do NOT catch a bad bucket layout; only the BSL-Unavailable alert does.
 
 ### 11.15 — which Velero metrics does Prometheus have? (DD-1465 "check first")
+
+> **Note (2026-10-21):** the lab Prometheus and Loki have been removed, so the `localhost:9090` / `:3100`
+> queries in 11.15–11.16 no longer work here. The findings stand; re-install Prometheus/Loki from commit
+> `96086f2` if you need to re-run them. The chart's `prometheus.io/scrape` annotation on Velero is harmless.
 
 The Velero pod carries `prometheus.io/scrape: "true"` (set by the chart), so the lab Prometheus (job `kubernetes-pods`) scrapes it.
 

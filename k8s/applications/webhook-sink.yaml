@@ -1,0 +1,23 @@
+# Dummy webhook receiver for lab Grafana notifications (see k8s/webhook-sink/webhook-sink.yaml).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: webhook-sink
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/jefta-jose/rke2-aws-tf-cluster.git
+    targetRevision: main
+    path: k8s/webhook-sink
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: grafana
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
